@@ -138,16 +138,19 @@ export class WebSocketDownlinks {
 }
 
 /**
- * Reject an untrusted upgrade before protocol negotiation.
+ * Reject an untrusted or unauthorized upgrade before protocol negotiation.
  * @param socket - Raw HTTP socket that remains owned by the caller.
+ * @param status - HTTP status written before closing the socket.
+ * @param reason - HTTP reason phrase and lowercase response body.
  */
-export function rejectWebSocketUpgrade(socket: Duplex): void {
+export function rejectWebSocketUpgrade(socket: Duplex, status = 403, reason = 'Forbidden'): void {
+  const body = reason.toLowerCase()
   socket.end([
-    'HTTP/1.1 403 Forbidden',
+    `HTTP/1.1 ${String(status)} ${reason}`,
     'Connection: close',
     'Content-Type: text/plain; charset=utf-8',
-    'Content-Length: 9',
+    `Content-Length: ${String(Buffer.byteLength(body))}`,
     '',
-    'forbidden',
+    body,
   ].join('\r\n'))
 }

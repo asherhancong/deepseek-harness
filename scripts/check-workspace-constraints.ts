@@ -52,8 +52,12 @@ const publishedRepositoryUrl = 'git+https://github.com/deepseek-ai/deepseek-harn
 const experimentalPackageDirectory = /^packages\/experimental\/[^/]+$/
 /** npm namespace reserved for private experimental packages. */
 const experimentalPackageNamePrefix = '@deepseek-ai/dsh-experimental-'
+/** Application directories published as npm members of the dsh release. */
+const dshNpmAppDirectory = /^apps\/(?:cli|web)$/
 /** Directories whose packages this repository publishes: one release member each. */
-const releaseMemberDirectory = /^(?:packages\/(?!experimental\/)[^/]+\/[^/]+|apps\/[^/]+|vendor\/[^/]+)$/
+const releaseMemberDirectory = /^(?:packages\/(?!experimental\/)[^/]+\/[^/]+|apps\/(?:cli|web)|vendor\/[^/]+)$/
+/** Private desktop assembly and its deploy root, released as application artifacts rather than npm. */
+const desktopRuntimeDirectories = new Set(['apps/desktop', 'apps/desktop-runtime'])
 
 const localArtifactDirs = new Set(['node_modules'])
 const appPackageFiles: Readonly<Record<string, readonly string[]>> = {
@@ -254,7 +258,12 @@ export function checkExperimentalManifest({ dir, manifest }: WorkspaceManifest):
   return errors
 }
 
-function checkWorkspace({ dir, manifest }: WorkspaceManifest): string[] {
+/**
+ * Validate one workspace manifest against its publication and package-layout policy.
+ * @param entry - Workspace directory and parsed manifest.
+ * @returns Repository-relative diagnostics for the manifest.
+ */
+export function checkWorkspace({ dir, manifest }: WorkspaceManifest): string[] {
   const errors = checkExperimentalManifest({ dir, manifest })
   const label = manifest.name ?? dir
   const isLandlockPackageDir = dir.startsWith('native/landlock-run/packages/')
@@ -314,7 +323,7 @@ function checkWorkspace({ dir, manifest }: WorkspaceManifest): string[] {
     }
   }
 
-  if (dir.startsWith('apps/') && manifest.name?.startsWith('@deepseek-ai/')) {
+  if (dshNpmAppDirectory.test(dir) && manifest.name?.startsWith('@deepseek-ai/')) {
     const expectedFiles = appPackageFiles[manifest.name]
     if (expectedFiles === undefined) {
       errors.push(`${label}: app package has no publication files policy`)
@@ -431,7 +440,10 @@ export function checkExperimentalDependencyIsolation(manifests: readonly Workspa
     .filter(name => name !== undefined))
   const errors: string[] = []
   for (const { dir, manifest } of manifests) {
-    if (!releaseMemberDirectory.test(dir) && dir !== 'python/sdk-runtime') continue
+    const officialRuntime = releaseMemberDirectory.test(dir)
+      || desktopRuntimeDirectories.has(dir)
+      || dir === 'python/sdk-runtime'
+    if (!officialRuntime) continue
     for (const section of runtimeDependencySections) {
       for (const name of Object.keys(manifest[section] ?? {})) {
         if (!experimentalNames.has(name)) continue

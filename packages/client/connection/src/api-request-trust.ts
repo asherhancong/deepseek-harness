@@ -13,8 +13,15 @@
  * belongs to the webserver config, and this fence is not an auth layer.
  */
 
+import { timingSafeEqual } from 'node:crypto'
 import type { IncomingHttpHeaders } from 'node:http'
 import { isLoopbackHostname } from './loopback-hostname.ts'
+
+/** Header carrying the desktop process's per-launch 256-bit capability. */
+export const DESKTOP_CAPABILITY_HEADER = 'x-dsh-desktop-capability'
+
+/** Base64url without padding for exactly 32 random bytes. */
+const DESKTOP_CAPABILITY_PATTERN = /^[A-Za-z0-9_-]{43}$/
 
 /** The request facts the fence reads from either HTTP representation. */
 interface ApiTrustRequest {
@@ -25,6 +32,37 @@ function header(headers: IncomingHttpHeaders | Headers, name: string): string | 
   if (headers instanceof Headers) return headers.get(name) ?? undefined
   const value = headers[name]
   return typeof value === 'string' ? value : undefined
+}
+
+/**
+ * Fail closed when a desktop-only capability is malformed. Accepting weaker
+ * caller-chosen strings here would turn a packaging mistake into the sole
+ * authentication boundary for the local control API.
+ * @param capability - Base64url encoding of 32 cryptographically random bytes.
+ */
+export function assertDesktopCapability(capability: string): void {
+  if (!DESKTOP_CAPABILITY_PATTERN.test(capability)) {
+    throw new Error('client-connection: desktopCapability must be unpadded base64url for exactly 32 random bytes')
+  }
+}
+
+/**
+ * Verify the optional desktop capability independently of the browser-trust
+ * fence. Undefined preserves the ordinary `dsh web` transport; a configured
+ * value makes every Connection-owned HTTP and WebSocket route require the
+ * exact per-launch header.
+ * @param request - Node HTTP or Fetch request facts.
+ * @param capability - Optional required desktop capability.
+ * @returns true when auth is disabled or the supplied capability matches.
+ */
+export function hasDesktopCapability(request: ApiTrustRequest, capability: string | undefined): boolean {
+  if (capability === undefined) return true
+  const presented = header(request.headers, DESKTOP_CAPABILITY_HEADER)
+  if (presented === undefined) return false
+  const expectedBytes = Buffer.from(capability)
+  const presentedBytes = Buffer.from(presented)
+  return expectedBytes.length === presentedBytes.length
+    && timingSafeEqual(expectedBytes, presentedBytes)
 }
 
 /** Normalized URL of a Host-header authority (hostname lowercased, default port stripped, IPv6 bracketed), or undefined when unparsable. */

@@ -47,12 +47,13 @@ export interface RuntimeClosureResult {
 export async function verifyRuntimeClosure(
   root: string,
   manifestPath = 'python/sdk-runtime/package.json',
+  platformsPath = 'python/sdk-runtime/platforms.json',
 ): Promise<RuntimeClosureResult> {
   const runtimeManifest = await loadManifest(resolve(root, manifestPath))
   const runtimeName = runtimeManifest.name ?? manifestPath
   const workspace = await loadWorkspacePackages(root)
   const runtimeDependencies = runtimeManifest.dependencies ?? {}
-  const platforms = await loadJson<RuntimePlatformManifest>(resolve(root, 'python/sdk-runtime/platforms.json'))
+  const platforms = await loadJson<RuntimePlatformManifest>(resolve(root, platformsPath))
   const presetPaths = globSync(AGENT_PRESET_GLOB, { cwd: root }).sort()
   const targets = Object.keys(platforms).sort()
   const parents = new Map<string, string | undefined>()
@@ -66,7 +67,7 @@ export async function verifyRuntimeClosure(
 
   const failures: string[] = []
   if (presetPaths.length === 0) failures.push(`no agent presets matched ${AGENT_PRESET_GLOB}`)
-  if (targets.length === 0) failures.push('python/sdk-runtime/platforms.json defines no runtime targets')
+  if (targets.length === 0) failures.push(`${platformsPath} defines no runtime targets`)
   failures.push(...await missingPresetPlugins(root, runtimeDependencies, presetPaths, targets))
   for (let index = 0; index < queue.length; index += 1) {
     const packageName = queue[index]
@@ -102,11 +103,14 @@ if (import.meta.main) {
   const root = resolve(import.meta.dirname, '..')
   const { values } = parseArgs({
     args: process.argv.slice(2),
-    options: { manifest: { type: 'string' } },
+    options: {
+      manifest: { type: 'string' },
+      platforms: { type: 'string' },
+    },
   })
-  const result = await verifyRuntimeClosure(root, values.manifest)
+  const result = await verifyRuntimeClosure(root, values.manifest, values.platforms)
   if (result.failures.length > 0) {
-    console.error('verify-runtime-closure: preset plugins or required workspace peers are missing from python/sdk-runtime dependencies:')
+    console.error(`verify-runtime-closure: preset plugins or required workspace peers are missing from ${values.manifest ?? 'python/sdk-runtime/package.json'} dependencies:`)
     for (const failure of result.failures) console.error(`  ${failure}`)
     process.exitCode = 1
   } else {
@@ -198,7 +202,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 async function loadWorkspacePackages(root: string): Promise<Map<string, WorkspacePackage>> {
-  const paths = globSync(['packages/*/*/package.json', 'vendor/*/package.json'], { cwd: root })
+  const paths = globSync([
+    'apps/*/package.json',
+    'packages/*/*/package.json',
+    'vendor/*/package.json',
+  ], { cwd: root })
     .sort()
     .map(relative => resolve(root, relative))
   const result = new Map<string, WorkspacePackage>()

@@ -10,7 +10,16 @@ import type { ApiProxy } from '@deepseek-ai/dsh-host-apiproxy/api'
 import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
 import { RpcId, type ClientRequest } from '@deepseek-ai/dsh-host-apiproxy/api'
 import type { WebServer, WebRoute, WebUpgradeRoute } from '@deepseek-ai/dsh-host-webserver'
-import { API_PATH, apply, HOST_EVENTS_PATH, inject, MUX_EVENTS_PATH, type HostConnectionHandle } from '../src/index.ts'
+import {
+  API_PATH,
+  apply,
+  HOST_EVENTS_PATH,
+  inject,
+  MUX_EVENTS_PATH,
+  type ConnectionConfig,
+  type HostConnectionHandle,
+} from '../src/index.ts'
+import { DESKTOP_CAPABILITY_HEADER } from '../src/api-request-trust.ts'
 import { DEFAULT_MAX_REQUEST_BODY_BYTES } from '../src/http-bridge.ts'
 
 /** Structural webServer fake recording both route registries. */
@@ -75,7 +84,7 @@ function fakeResponse(): { response: ServerResponse; state: { status?: number; b
   return { response, state }
 }
 
-async function mounted(config?: { trustedHosts?: string[] }): Promise<{
+async function mounted(config?: ConnectionConfig): Promise<{
   routes: WebRoute[]
   upgrades: WebUpgradeRoute[]
   dispose: () => Promise<void>
@@ -121,6 +130,18 @@ describe('connection node half', () => {
     expect(upgrades).toHaveLength(0)
   })
 
+  it('fails the load on a malformed desktop capability', async () => {
+    const routes: WebRoute[] = []
+    const upgrades: WebUpgradeRoute[] = []
+    const ctx = new Context()
+    ctx.provide('webServer', fakeHttpServer(routes, upgrades) as WebServer)
+    ctx.provide('apiProxy', {} as unknown as ApiProxy)
+    const fiber = ctx.plugin({ inject: [...inject], apply }, { desktopCapability: 'guessable' })
+    await expect(fiber).rejects.toThrow(/exactly 32 random bytes/)
+    expect(routes).toHaveLength(0)
+    expect(upgrades).toHaveLength(0)
+  })
+
   it('registers one HTTP route plus one upgrade route per downlink and removes all three with the fiber', async () => {
     const { routes, upgrades, dispose } = await mounted()
     expect(routes).toHaveLength(1)
@@ -153,6 +174,41 @@ describe('connection node half', () => {
     }, MUX_EVENTS_PATH), socket, Buffer.alloc(0))
     await ended
     expect(Buffer.concat(chunks).toString()).toContain('HTTP/1.1 403 Forbidden')
+    await dispose()
+  })
+
+  it('requires the configured desktop capability on HTTP and WebSocket routes', async () => {
+    const capability = 'A'.repeat(43)
+    const { routes, upgrades, dispose } = await mounted({ desktopCapability: capability })
+
+    for (const supplied of [undefined, 'B'.repeat(43)]) {
+      const headers = {
+        host: '127.0.0.1:3080',
+        ...(supplied === undefined ? {} : { [DESKTOP_CAPABILITY_HEADER]: supplied }),
+      }
+      const denied = fakeResponse()
+      await routes[0]!.handler(fakeRequest(headers), denied.response)
+      expect(denied.state).toMatchObject({ status: 401, body: 'unauthorized' })
+    }
+
+    const allowed = fakeResponse()
+    await routes[0]!.handler(fakeRequest({
+      host: '127.0.0.1:3080',
+      [DESKTOP_CAPABILITY_HEADER]: capability,
+    }), allowed.response)
+    expect(allowed.state.status).toBe(404)
+
+    const socket = new PassThrough()
+    const chunks: Buffer[] = []
+    socket.on('data', (chunk: Buffer) => { chunks.push(chunk) })
+    const ended = once(socket, 'end')
+    await upgrades[0]!.handler(
+      fakeRequest({ host: '127.0.0.1:3080' }, MUX_EVENTS_PATH),
+      socket,
+      Buffer.alloc(0),
+    )
+    await ended
+    expect(Buffer.concat(chunks).toString()).toContain('HTTP/1.1 401 Unauthorized')
     await dispose()
   })
 
@@ -220,10 +276,11 @@ describe('connection node half', () => {
   })
 
   it('provides a disposable dedicated RPC channel without requiring apiProxy', async () => {
+    const capability = 'A'.repeat(43)
     const ctx = new Context()
     const routes: WebRoute[] = []
     ctx.provide('webServer', fakeHttpServer(routes, []) as WebServer)
-    const fiber = ctx.plugin({ inject: [...inject], apply })
+    const fiber = ctx.plugin({ inject: [...inject], apply }, { desktopCapability: capability })
     await fiber.await()
     expect(routes).toHaveLength(1)
     expect(routes[0]).toMatchObject({ kind: 'prefix', path: API_PATH })
@@ -243,8 +300,22 @@ describe('connection node half', () => {
       method: 'goals/create',
       payload: { args: { agentId: 'agent-1' } },
     }
+    for (const supplied of [undefined, 'B'.repeat(43)]) {
+      const headers = {
+        host: '127.0.0.1:3080',
+        ...(supplied === undefined ? {} : { [DESKTOP_CAPABILITY_HEADER]: supplied }),
+      }
+      const denied = fakeResponse()
+      await route!.handler(fakePost(headers, '/rpc/goals/create', request), denied.response)
+      expect(denied.state).toMatchObject({ status: 401, body: 'unauthorized' })
+    }
+    expect(calls).toEqual([])
+
     const result = fakeResponse()
-    await route!.handler(fakePost({ host: '127.0.0.1:3080' }, '/rpc/goals/create', request), result.response)
+    await route!.handler(fakePost({
+      host: '127.0.0.1:3080',
+      [DESKTOP_CAPABILITY_HEADER]: capability,
+    }, '/rpc/goals/create', request), result.response)
     expect(result.state.status).toBe(200)
     expect(JSON.parse(String(result.state.body))).toEqual({
       type: 'server-response',

@@ -7,7 +7,12 @@ import type { WebRoute, WebUpgradeRoute } from '@deepseek-ai/dsh-host-webserver'
 import { toFetchHandler } from '@deepseek-ai/dsh-host-apiproxy'
 import { API_PATH, HOST_EVENTS_PATH, MUX_EVENTS_PATH } from './api-path.ts'
 import { bridge, DEFAULT_MAX_REQUEST_BODY_BYTES } from './http-bridge.ts'
-import { assertTrustedAuthority, isTrustedApiRequest } from './api-request-trust.ts'
+import {
+  assertDesktopCapability,
+  assertTrustedAuthority,
+  hasDesktopCapability,
+  isTrustedApiRequest,
+} from './api-request-trust.ts'
 import { HostConnectionService } from './rpc-host.ts'
 import { rejectWebSocketUpgrade, WebSocketDownlinks } from './websocket-downlink.ts'
 
@@ -57,12 +62,20 @@ export interface ConnectionConfig {
    * that is not a bare, canonical authority fails the plugin load.
    */
   trustedHosts?: string[]
+  /**
+   * Desktop-only, per-launch 256-bit capability. When configured, every
+   * Connection-owned HTTP and WebSocket route requires the matching request
+   * header in addition to the Host/Origin trust fence. Ordinary `dsh web`
+   * leaves this unset.
+   */
+  desktopCapability?: string
   /** Maximum buffered JSON body for every `/api` request. Default: 300 MiB. */
   maxRequestBodyBytes?: number
 }
 
 export const Config: z<ConnectionConfig> = z.object({
   trustedHosts: z.array(String).default([]),
+  desktopCapability: z.string().role('secret'),
   maxRequestBodyBytes: z.natural().min(1).default(DEFAULT_MAX_REQUEST_BODY_BYTES),
 })
 
@@ -130,12 +143,14 @@ const PRIVILEGED_METHODS = new Set([
 export function apply(ctx: Context, config?: ConnectionConfig): void {
   // The Loader resolves schema defaults; hand-built test contexts may pass none.
   const trustedHosts = config?.trustedHosts ?? []
+  const desktopCapability = config?.desktopCapability
   const maxRequestBodyBytes = config?.maxRequestBodyBytes ?? DEFAULT_MAX_REQUEST_BODY_BYTES
   // Config boundary: a malformed entry fails the load loudly here rather than
   // silently authorizing its hostname prefix at request time.
   for (const entry of trustedHosts) assertTrustedAuthority(entry)
+  if (desktopCapability !== undefined) assertDesktopCapability(desktopCapability)
   if (ctx.get('apiProxy') !== undefined) assertImageBodyCapacity(ctx, maxRequestBodyBytes)
-  const connection = new HostConnectionService(ctx, trustedHosts)
+  const connection = new HostConnectionService(ctx, trustedHosts, desktopCapability)
   const fetchHandler = connection.createSharedFetchHandler(API_PATH, {
     async fetch(request) {
       const pathname = new URL(request.url).pathname
@@ -167,6 +182,11 @@ export function apply(ctx: Context, config?: ConnectionConfig): void {
         res.end('forbidden')
         return
       }
+      if (!hasDesktopCapability(req, desktopCapability)) {
+        res.writeHead(401)
+        res.end('unauthorized')
+        return
+      }
       await bridge(req, res, fetchHandler, maxRequestBodyBytes)
     },
   }
@@ -183,6 +203,10 @@ export function apply(ctx: Context, config?: ConnectionConfig): void {
         handler: (req, socket, head) => {
           if (!isTrustedApiRequest(req, trustedHosts)) {
             rejectWebSocketUpgrade(socket)
+            return
+          }
+          if (!hasDesktopCapability(req, desktopCapability)) {
+            rejectWebSocketUpgrade(socket, 401, 'Unauthorized')
             return
           }
           return handle(req, socket, head)

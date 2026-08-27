@@ -162,4 +162,38 @@ describe('verifyRuntimeClosure', () => {
     expect(result.workspacePackageCount).toBe(1)
     expect(result.failures).toEqual(['runtime -> @scope/root -> @scope/required'])
   })
+
+  it('traverses an application deploy root against a custom platform manifest', async () => {
+    const root = fixture({
+      'apps/desktop-runtime/package.json': {
+        name: '@scope/desktop-runtime',
+        dependencies: { '@scope/app': 'workspace:^' },
+      },
+      'apps/desktop-runtime/platforms.json': {
+        'macos-arm64': { tag: 'macosx_13_0_arm64', executable: 'DSH-arm64' },
+      },
+      'apps/cli/package.json': {
+        name: '@scope/app',
+        dependencies: { '@scope/plugin': 'workspace:^' },
+      },
+      'apps/cli/config/agent-presets/minimal/agent.cordis.yml': '[]\n',
+      'packages/core/plugin/package.json': {
+        name: '@scope/plugin',
+        peerDependencies: { '@scope/required': 'workspace:^' },
+      },
+      'packages/core/required/package.json': { name: '@scope/required' },
+    })
+
+    const result = await verifyRuntimeClosure(
+      root,
+      'apps/desktop-runtime/package.json',
+      'apps/desktop-runtime/platforms.json',
+    )
+
+    expect(result.presetCount).toBe(1)
+    expect(result.workspacePackageCount).toBe(2)
+    expect(result.failures).toEqual([
+      '@scope/desktop-runtime -> @scope/app -> @scope/plugin -> @scope/required',
+    ])
+  })
 })

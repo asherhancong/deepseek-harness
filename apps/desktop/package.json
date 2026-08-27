@@ -1,0 +1,31 @@
+{
+  "name": "@deepseek-ai/dsh-desktop",
+  "productName": "DSH",
+  "description": "Private macOS Electron distribution of DSH over the shipped Web UI",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "scripts": {
+    "build": "tsc -b && tsdown",
+    "stage-runtime": "node scripts/prepare-runtime.mjs",
+    "dist": "pnpm run stage-runtime && electron-builder --config electron-builder.config.cjs --mac --publish never",
+    "start": "electron .",
+    "test": "vitest run --root ../.. apps/desktop/tests",
+    "verify:packaged-backend": "node scripts/verify-packaged-backend.mjs"
+  },
+  "license": "MIT",
+  "author": "DeepSeek Harness contributors",
+  "dependencies": {
+    "electron-updater": "6.8.9"
+  },
+  "devDependencies": {
+    "@deepseek-ai/dsh": "workspace:^",
+    "@types/node": "^22.20.0",
+    "electron": "44.0.0",
+    "electron-builder": "26.15.3",
+    "tsdown": "^0.22.2",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.8"
+  }
+}

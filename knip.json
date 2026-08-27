@@ -5,6 +5,7 @@
   ],
   "ignoreBinaries": [
     "bwrap",
+    "electron-builder",
     "icacls",
     "musl-gcc",
     "python3",
@@ -14,8 +15,9 @@
     "where.exe"
   ],
   "ignoreWorkspaces": [
-    "vendor/*",
-    "python/sdk-runtime"
+    "apps/desktop-runtime",
+    "python/sdk-runtime",
+    "vendor/*"
   ],
   "ignoreDependencies": [
     "@yarnpkg/cli-dist",
@@ -638,6 +640,17 @@
       ],
       "ignoreDependencies": [
         "@deepseek-ai/.+"
+      ]
+    },
+    "apps/desktop": {
+      "entry": [
+        "src/main/index.ts",
+        "tests/**/*.spec.ts",
+        "electron-builder.config.cjs"
+      ],
+      "project": [
+        "src/**/*.ts",
+        "tests/**/*.ts"
       ]
     },
     "packages/subagent/subagent-dsh-sdk": {

@@ -1,0 +1,9 @@
+# Desktop-only transport authentication. The bootstrap reads a fresh 256-bit
+# capability once from Electron's private launch pipe, closes that descriptor,
+# and keeps the value in this non-enumerable process global before importing
+# the CLI. Ordinary `dsh web` never applies this layer.
+- id: connection
+  config:
+    # A patch replaces the whole config; retain the Web bundle's trust source.
+    trustedHosts: !!js ctx.webRuntime.trustedHosts
+    desktopCapability: !!js globalThis.__DSH_DESKTOP_CAPABILITY__

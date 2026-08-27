@@ -48,6 +48,21 @@ describe('release families', () => {
     expect(members.map(member => member.name)).not.toContain('@deepseek-ai/dsh-experimental-agent-team')
   })
 
+  it('selects only the CLI and Web applications for the dsh npm release', () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-release-apps-'))
+    roots.push(root)
+    write(join(root, 'packages/core/example/package.json'), '{"name":"@deepseek-ai/dsh-example","version":"0.0.1"}\n')
+    write(join(root, 'apps/cli/package.json'), '{"name":"@deepseek-ai/dsh","version":"0.0.1"}\n')
+    write(join(root, 'apps/web/package.json'), '{"name":"@deepseek-ai/dsh-web-frontend","version":"0.0.1"}\n')
+    write(join(root, 'apps/desktop/package.json'), '{"name":"@deepseek-ai/dsh-desktop","version":"1.0.0","private":true}\n')
+
+    expect(releaseFamily('dsh').members(root).map(member => member.directory)).toEqual([
+      'apps/cli',
+      'apps/web',
+      'packages/core/example',
+    ])
+  })
+
   it('bumps private dsh packages without adding release tags', () => {
     const root = mkdtempSync(join(tmpdir(), 'dsh-release-version-'))
     roots.push(root)

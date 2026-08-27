@@ -415,12 +415,19 @@ export interface ConnectionConfig {
    * that is not a bare, canonical authority fails the plugin load.
    */
   trustedHosts?: string[]
+  /**
+   * Desktop-only, per-launch 256-bit capability. When configured, every
+   * Connection-owned HTTP and WebSocket route requires the matching request
+   * header in addition to the Host/Origin trust fence. Ordinary `dsh web`
+   * leaves this unset.
+   */
+  desktopCapability?: string
   /** Maximum buffered JSON body for every `/api` request. Default: 300 MiB. */
   maxRequestBodyBytes?: number
 }
 ```
 
-来源：[`packages/client/connection/src/index.ts:50`](../packages/client/connection/src/index.ts)
+来源：[`packages/client/connection/src/index.ts:55`](../packages/client/connection/src/index.ts)
 
 <a id="deepseek-aidsh-client-hmr"></a>
 

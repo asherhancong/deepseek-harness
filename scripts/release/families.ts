@@ -1,8 +1,9 @@
 /**
- * The three independent publish sequences this repository releases from
- * (`packages/` + `apps/`, `vendor/`, and `native/`) and the two this module
- * owns: `dsh` and `vendor`. Each family carries its own version baseline, tag
- * naming, and publish set, so releasing one never republishes another
+ * The npm publish sequences this module owns: `dsh` packages plus the CLI and
+ * Web applications, and `vendor` packages. Desktop application artifacts and
+ * native packages use separate release machinery. Each family carries its own
+ * version baseline, tag naming, and publish set, so releasing one never
+ * republishes another
  * ([rationale](../../.agents/notes/implemented/process/2026-08-10-npm-release-sequences.md)).
  *
  * The family dimension lives here only. A new sequence adds a subclass and a
@@ -316,10 +317,14 @@ export abstract class ReleaseFamily {
   abstract readonly installedEntry: InstalledEntry | undefined
 }
 
-/** Release packages and apps: one shared version across the whole family. */
+/** Release packages and npm applications: one shared version across the whole family. */
 class DshFamily extends ReleaseFamily {
   readonly id = 'dsh'
-  readonly patterns = ['packages/!(experimental)/*/package.json', 'apps/*/package.json'] as const
+  readonly patterns = [
+    'packages/!(experimental)/*/package.json',
+    'apps/cli/package.json',
+    'apps/web/package.json',
+  ] as const
   readonly tagPrefix = 'dsh-v'
 
   /** Require current artifacts from a complete official client build. */

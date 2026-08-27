@@ -1,0 +1,848 @@
+# Build, sign, notarize, and stage the macOS desktop artifacts from a desktop-v* tag.
+# The draft release stays invisible to electron-updater until a maintainer publishes it.
+name: Desktop release (macOS)
+
+on:
+  push:
+    tags:
+      - 'desktop-v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PRIMARY_NODE_VERSION: '24'
+  DSH_TELEMETRY_DISABLED: '1'
+  DESKTOP_RELEASE_REPOSITORY: 'asherhancong/deepseek-harness'
+
+jobs:
+  release:
+    name: Build signed DMGs
+    runs-on: macos-15
+    environment: desktop-release
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+        with:
+          dest: ${{ runner.temp }}/setup-pnpm
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.PRIMARY_NODE_VERSION }}
+
+      - name: Configure pnpm store path
+        id: pnpm-store
+        shell: bash
+        run: |
+          store_root="$HOME/.local/share/pnpm/store"
+          echo "PNPM_CONFIG_STORE_DIR=$store_root" >> "$GITHUB_ENV"
+          store_path=$(PNPM_CONFIG_STORE_DIR="$store_root" pnpm store path --silent)
+          echo "path=$store_path" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache/restore@v4
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: ${{ runner.os }}-node-${{ env.PRIMARY_NODE_VERSION }}-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-node-${{ env.PRIMARY_NODE_VERSION }}-pnpm-
+
+      - name: Validate tag and desktop version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REPOSITORY" != "$DESKTOP_RELEASE_REPOSITORY" ]]; then
+            echo "::error::This workflow publishes updater assets to ${DESKTOP_RELEASE_REPOSITORY}, not ${GITHUB_REPOSITORY}."
+            exit 1
+          fi
+          if [[ "$GITHUB_REF_TYPE" != 'tag' ]]; then
+            echo '::error::Run this workflow from a desktop-v* tag.'
+            exit 1
+          fi
+
+          package_version=$(node -p "require('./apps/desktop/package.json').version")
+          expected_tag="desktop-v${package_version}"
+          if [[ "$GITHUB_REF_NAME" != "$expected_tag" ]]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match apps/desktop/package.json version ${package_version}; expected ${expected_tag}."
+            exit 1
+          fi
+          echo "DESKTOP_VERSION=$package_version" >> "$GITHUB_ENV"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build official runtime and desktop entry
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm run build:official
+          pnpm --dir apps/desktop run build
+          test -f apps/desktop/lib/index.js
+
+      - name: Test desktop authorization and lifecycle boundaries
+        run: pnpm exec vitest run apps/desktop/tests packages/client/connection/tests
+
+      - name: Prepare signing and notarization credentials
+        shell: bash
+        env:
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for variable_name in CSC_LINK CSC_KEY_PASSWORD APPLE_API_KEY_P8 APPLE_API_KEY_ID APPLE_API_ISSUER; do
+            if [[ -z "${!variable_name:-}" ]]; then
+              echo "::error::Required desktop-release secret ${variable_name} is not configured."
+              missing=1
+            fi
+          done
+          if [[ "$missing" -ne 0 ]]; then
+            exit 1
+          fi
+
+          api_key_path="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+          printf '%s' "$APPLE_API_KEY_P8" | base64 --decode > "$api_key_path"
+          chmod 600 "$api_key_path"
+          if ! grep -q '^-----BEGIN PRIVATE KEY-----$' "$api_key_path"; then
+            echo '::error::APPLE_API_KEY_P8 did not decode to an App Store Connect private key.'
+            exit 1
+          fi
+          echo "APPLE_API_KEY=$api_key_path" >> "$GITHUB_ENV"
+
+      - name: Package, sign, and notarize macOS artifacts
+        shell: bash
+        env:
+          DSH_DESKTOP_RELEASE: '1'
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -euo pipefail
+          pnpm --dir apps/desktop run stage-runtime
+          pnpm --dir apps/desktop exec electron-builder --config electron-builder.config.cjs --mac --publish never
+
+      - name: Verify signed and notarized applications
+        shell: bash
+        run: |
+          set -euo pipefail
+          output_dir='apps/desktop/release'
+          app_count=0
+          built_arches=' '
+
+          fail() {
+            echo "::error::$1"
+            exit 1
+          }
+
+          if ! asar_cli=$(node -e "const { dirname, resolve } = require('node:path'); const builderPackage = require.resolve('electron-builder/package.json', { paths: [resolve('apps/desktop')] }); process.stdout.write(require.resolve('@electron/asar/bin/asar.js', { paths: [dirname(builderPackage)] }));"); then
+            fail 'Could not resolve the @electron/asar CLI used by electron-builder.'
+          fi
+          if [[ ! -f "$asar_cli" ]]; then
+            fail "Resolved @electron/asar CLI is missing: ${asar_cli}"
+          fi
+
+          require_runtime_match() {
+            local label="$1"
+            local path_suffix="$2"
+            local runtime_match
+            runtime_match=$(find -L "$runtime" -type f -path "*${path_suffix}" -print -quit 2>/dev/null || true)
+            if [[ -z "$runtime_match" ]]; then
+              fail "${app_path}: missing ${label} under ${runtime}"
+            fi
+          }
+
+          verify_native_files() {
+            local label="$1"
+            local path_suffix="$2"
+            local executable_required="$3"
+            local matches=0
+            local native_arches
+
+            while IFS= read -r -d '' native_path; do
+              matches=$((matches + 1))
+              if [[ "$executable_required" == 'yes' && ! -x "$native_path" ]]; then
+                fail "${app_path}: ${label} is not executable: ${native_path}"
+              fi
+              if ! native_arches=$(lipo -archs "$native_path" 2>/dev/null); then
+                fail "${app_path}: ${label} is not a Mach-O file readable by lipo: ${native_path}"
+              fi
+              if [[ " ${native_arches} " != *" ${macho_arch} "* ]]; then
+                fail "${app_path}: ${label} does not contain ${macho_arch}: ${native_path} (${native_arches})"
+              fi
+            done < <(find -L "$runtime" -type f -path "*${path_suffix}" -print0 2>/dev/null)
+
+            if [[ "$matches" -eq 0 ]]; then
+              fail "${app_path}: no ${label} files matched *${path_suffix}"
+            fi
+          }
+
+          while IFS= read -r -d '' app_path; do
+            app_count=$((app_count + 1))
+            codesign --verify --deep --strict --verbose=2 "$app_path"
+
+            signature_details=$(codesign --display --verbose=4 "$app_path" 2>&1)
+            if ! grep -q '^Authority=Developer ID Application:' <<< "$signature_details"; then
+              echo "::error::${app_path} is not signed with a Developer ID Application certificate."
+              exit 1
+            fi
+
+            spctl --assess --type execute --verbose=4 "$app_path"
+            xcrun stapler validate "$app_path"
+
+            executable="$app_path/Contents/MacOS/DSH"
+            if [[ ! -x "$executable" ]]; then
+              echo "::error::Packaged executable is missing: ${executable}"
+              exit 1
+            fi
+
+            if ! app_arch=$(lipo -archs "$executable"); then
+              fail "Could not read packaged executable architecture: ${executable}"
+            fi
+            case "$app_arch" in
+              arm64)
+                package_arch='arm64'
+                macho_arch='arm64'
+                ;;
+              x86_64)
+                package_arch='x64'
+                macho_arch='x86_64'
+                ;;
+              *)
+                fail "Expected a thin arm64 or x86_64 app, found '${app_arch}' in ${executable}."
+                ;;
+            esac
+            built_arches="${built_arches}${macho_arch} "
+
+            for desktop_resource in backend-bootstrap.cjs desktop.cordis.patch.yml; do
+              resource_path="$app_path/Contents/Resources/$desktop_resource"
+              if [[ ! -s "$resource_path" ]]; then
+                fail "${app_path}: missing desktop security resource Contents/Resources/${desktop_resource}"
+              fi
+            done
+
+            updater_config="$app_path/Contents/Resources/app-update.yml"
+            if [[ ! -s "$updater_config" ]]; then
+              fail "${app_path}: missing Contents/Resources/app-update.yml"
+            fi
+            if ! APP_UPDATE_CONFIG="$updater_config" node <<'UPDATER_CONFIG'
+          const fs = require('node:fs')
+          const yaml = require('js-yaml')
+
+          const config = yaml.load(
+            fs.readFileSync(process.env.APP_UPDATE_CONFIG, 'utf8'),
+            { schema: yaml.JSON_SCHEMA },
+          )
+          if (config === null || typeof config !== 'object' || Array.isArray(config)) {
+            throw new Error('app-update.yml must contain one mapping')
+          }
+          const expected = {
+            provider: 'github',
+            owner: 'asherhancong',
+            repo: 'deepseek-harness',
+            channel: 'latest',
+            releaseType: 'draft',
+            tagNamePrefix: 'desktop-v',
+          }
+          for (const [key, value] of Object.entries(expected)) {
+            if (config[key] !== value) {
+              throw new Error(`app-update.yml ${key} must equal ${JSON.stringify(value)}; got ${JSON.stringify(config[key])}`)
+            }
+          }
+          if (typeof config.updaterCacheDirName !== 'string' || config.updaterCacheDirName.length === 0) {
+            throw new Error('app-update.yml updaterCacheDirName must be a non-empty string')
+          }
+          UPDATER_CONFIG
+            then
+              fail "${app_path}: app-update.yml does not match the desktop GitHub updater contract"
+            fi
+
+            runtime="$app_path/Contents/Resources/dsh-runtime"
+            if [[ ! -d "$runtime" ]]; then
+              fail "${app_path}: missing Contents/Resources/dsh-runtime"
+            fi
+            if ! symlink_gate_output=$(
+              DSH_RUNTIME="$runtime" node <<'SYMLINK_GATE'
+          const fs = require('node:fs')
+          const path = require('node:path')
+
+          function assertInsideRuntime(link, target, runtime) {
+            const relative = path.relative(runtime, target)
+            if (
+              relative === '..' ||
+              relative.startsWith(`..${path.sep}`) ||
+              path.isAbsolute(relative)
+            ) {
+              throw new Error(`runtime symlink escapes dsh-runtime: ${link} -> ${target}`)
+            }
+          }
+
+          const runtimeInput = path.resolve(process.env.DSH_RUNTIME)
+          const runtimeMetadata = fs.lstatSync(runtimeInput)
+          if (!runtimeMetadata.isDirectory() || runtimeMetadata.isSymbolicLink()) {
+            throw new Error(`dsh-runtime must be a real directory: ${runtimeInput}`)
+          }
+
+          const runtime = fs.realpathSync(runtimeInput)
+          const pending = [runtime]
+          let symlinkCount = 0
+
+          while (pending.length > 0) {
+            const directory = pending.pop()
+            for (const name of fs.readdirSync(directory)) {
+              const candidate = path.join(directory, name)
+              const metadata = fs.lstatSync(candidate)
+
+              if (metadata.isSymbolicLink()) {
+                let target
+                try {
+                  target = fs.realpathSync(candidate)
+                } catch (error) {
+                  const detail = error instanceof Error ? error.message : String(error)
+                  throw new Error(`broken runtime symlink: ${candidate}: ${detail}`)
+                }
+                assertInsideRuntime(candidate, target, runtime)
+                symlinkCount += 1
+              } else if (metadata.isDirectory()) {
+                pending.push(candidate)
+              }
+            }
+          }
+
+          console.log(`Verified ${symlinkCount} contained runtime symlinks`)
+          SYMLINK_GATE
+            ); then
+              fail "${app_path}: dsh-runtime contains a broken or escaping symlink"
+            fi
+            echo "$symlink_gate_output"
+
+            cli_runtime="$runtime/node_modules/@deepseek-ai/dsh"
+            if [[ ! -s "$cli_runtime/package.json" ]]; then
+              fail "${app_path}: missing packaged CLI manifest: ${cli_runtime}/package.json"
+            fi
+            if [[ ! -s "$cli_runtime/lib/bin.js" ]]; then
+              fail "${app_path}: missing packaged CLI entry: ${cli_runtime}/lib/bin.js"
+            fi
+            if [[ ! -d "$cli_runtime/config" ]]; then
+              fail "${app_path}: missing packaged CLI config: ${cli_runtime}/config"
+            fi
+            runtime_config_entry=$(find "$cli_runtime/config" -type f -print -quit 2>/dev/null || true)
+            if [[ -z "$runtime_config_entry" ]]; then
+              fail "${app_path}: packaged CLI config is empty: ${cli_runtime}/config"
+            fi
+            web_app_package_suffix='/node_modules/@deepseek-ai/dsh-web-app/package.json'
+            web_app_package=$(find "$runtime/node_modules" -type f -path "*${web_app_package_suffix}" -print -quit 2>/dev/null || true)
+            if [[ -z "$web_app_package" ]]; then
+              fail "${app_path}: missing @deepseek-ai/dsh-web-app/package.json under ${runtime}"
+            fi
+            if ! web_index=$(
+              DSH_RUNTIME="$runtime" \
+              WEB_APP_PACKAGE="$web_app_package" \
+              node <<'WEB_RESOLVE'
+          const fs = require('node:fs')
+          const path = require('node:path')
+          const { createRequire } = require('node:module')
+
+          function assertInsideRuntime(label, candidate, runtime) {
+            const relative = path.relative(runtime, candidate)
+            if (
+              relative === '..' ||
+              relative.startsWith(`..${path.sep}`) ||
+              path.isAbsolute(relative)
+            ) {
+              throw new Error(`${label} escapes dsh-runtime: ${candidate}`)
+            }
+          }
+
+          const runtime = fs.realpathSync(process.env.DSH_RUNTIME)
+          const webAppPackage = fs.realpathSync(process.env.WEB_APP_PACKAGE)
+          assertInsideRuntime('@deepseek-ai/dsh-web-app/package.json', webAppPackage, runtime)
+
+          const requireFromWebApp = createRequire(webAppPackage)
+          const webIndex = fs.realpathSync(
+            requireFromWebApp.resolve('@deepseek-ai/dsh-web-frontend/dist/index.html'),
+          )
+          assertInsideRuntime('@deepseek-ai/dsh-web-frontend/dist/index.html', webIndex, runtime)
+
+          const webIndexStat = fs.statSync(webIndex)
+          if (!webIndexStat.isFile() || webIndexStat.size === 0) {
+            throw new Error(`packaged Web UI index is missing or empty: ${webIndex}`)
+          }
+          process.stdout.write(webIndex)
+          WEB_RESOLVE
+            ); then
+              fail "${app_path}: could not resolve the packaged Web UI from ${web_app_package}"
+            fi
+            if [[ ! -s "$web_index" ]]; then
+              fail "${app_path}: packaged Web UI is missing or empty: ${web_index}"
+            fi
+
+            require_runtime_match '@vscode/ripgrep wrapper' '/node_modules/@vscode/ripgrep/package.json'
+            require_runtime_match 'node-pty wrapper' '/node_modules/node-pty/package.json'
+            require_runtime_match 'node-addon-require-builtin wrapper' '/node_modules/node-addon-require-builtin/package.json'
+            verify_native_files \
+              "@vscode/ripgrep ${package_arch} binary" \
+              "/node_modules/@vscode/ripgrep-darwin-${package_arch}/bin/rg" \
+              'yes'
+            verify_native_files \
+              "node-pty ${package_arch} addon" \
+              "/node_modules/node-pty/prebuilds/darwin-${package_arch}/pty.node" \
+              'no'
+            verify_native_files \
+              "node-pty ${package_arch} spawn-helper" \
+              "/node_modules/node-pty/prebuilds/darwin-${package_arch}/spawn-helper" \
+              'yes'
+            verify_native_files \
+              "node-addon-require-builtin ${package_arch} addon" \
+              "/node_modules/node-addon-require-builtin-darwin-${package_arch}/prebuilt/darwin-${package_arch}-*.node" \
+              'no'
+            verify_native_files \
+              "@koromix/koffi ${package_arch} addon" \
+              "/node_modules/@koromix/koffi-darwin-${package_arch}/darwin_${package_arch}/koffi.node" \
+              'no'
+
+            asar_path="$app_path/Contents/Resources/app.asar"
+            if [[ ! -f "$asar_path" ]]; then
+              fail "${app_path}: missing Contents/Resources/app.asar"
+            fi
+            asar_listing="$RUNNER_TEMP/dsh-asar-${package_arch}.txt"
+            if ! node "$asar_cli" list "$asar_path" > "$asar_listing"; then
+              fail "${app_path}: could not list app.asar"
+            fi
+            if ! grep -Fxq '/lib/index.js' "$asar_listing"; then
+              fail "${app_path}: app.asar does not contain lib/index.js"
+            fi
+            if ! grep -Fxq '/node_modules/electron-updater/package.json' "$asar_listing"; then
+              fail "${app_path}: app.asar does not contain electron-updater"
+            fi
+          done < <(find "$output_dir" -type d -name 'DSH.app' -print0)
+
+          if [[ "$app_count" -ne 2 ]]; then
+            echo "::error::Expected two packaged DSH.app bundles, found ${app_count}."
+            exit 1
+          fi
+          for required_arch in arm64 x86_64; do
+            if [[ "$built_arches" != *" ${required_arch} "* ]]; then
+              echo "::error::No packaged application contains architecture ${required_arch}."
+              exit 1
+            fi
+          done
+
+      - name: Smoke test packaged backend authorization
+        run: pnpm --dir apps/desktop run verify:packaged-backend
+
+      - name: Verify update and installer artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          output_dir='apps/desktop/release'
+          dmg_assets=("$output_dir"/*.dmg)
+          zip_assets=("$output_dir"/*.zip)
+          blockmap_assets=("$output_dir"/*.blockmap)
+          dmg_blockmap_assets=("$output_dir"/*.dmg.blockmap)
+          zip_blockmap_assets=("$output_dir"/*.zip.blockmap)
+          manifest="$output_dir/latest-mac.yml"
+
+          if [[ "${#dmg_assets[@]}" -ne 2 ]]; then
+            echo "::error::Expected two DMGs, found ${#dmg_assets[@]}."
+            exit 1
+          fi
+          if [[ "${#zip_assets[@]}" -ne 2 ]]; then
+            echo "::error::Expected two updater ZIPs, found ${#zip_assets[@]}."
+            exit 1
+          fi
+          if [[ "${#blockmap_assets[@]}" -ne 4 ]]; then
+            echo "::error::Expected four updater blockmaps, found ${#blockmap_assets[@]}."
+            exit 1
+          fi
+          if [[ "${#dmg_blockmap_assets[@]}" -ne 2 ]]; then
+            echo "::error::Expected two DMG blockmaps, found ${#dmg_blockmap_assets[@]}."
+            exit 1
+          fi
+          if [[ "${#zip_blockmap_assets[@]}" -ne 2 ]]; then
+            echo "::error::Expected two ZIP blockmaps, found ${#zip_blockmap_assets[@]}."
+            exit 1
+          fi
+          if [[ ! -s "$manifest" ]]; then
+            echo '::error::latest-mac.yml was not generated.'
+            exit 1
+          fi
+
+          for arch in arm64 x64; do
+            arch_dmgs=("$output_dir"/*-"$arch".dmg)
+            arch_zips=("$output_dir"/*-"$arch".zip)
+            if [[ "${#arch_dmgs[@]}" -ne 1 || "${#arch_zips[@]}" -ne 1 ]]; then
+              echo "::error::Expected one DMG and one ZIP for ${arch}."
+              exit 1
+            fi
+          done
+
+          for zip_path in "${zip_assets[@]}"; do
+            (
+              extract_dir="$RUNNER_TEMP/dsh-zip-${RANDOM}-${RANDOM}"
+              mkdir -p "$extract_dir"
+              cleanup_extract() {
+                chmod -R u+w "$extract_dir" >/dev/null 2>&1 || true
+                rm -rf -- "$extract_dir"
+              }
+              trap cleanup_extract EXIT
+
+              unzip -tqq "$zip_path"
+              ditto -x -k "$zip_path" "$extract_dir"
+              extracted_app_count=$(find "$extract_dir" -type d -name 'DSH.app' -print | wc -l | tr -d '[:space:]')
+              if [[ "$extracted_app_count" -ne 1 || ! -d "$extract_dir/DSH.app" ]]; then
+                echo "::error::${zip_path} must contain exactly one root DSH.app."
+                exit 1
+              fi
+
+              extracted_app="$extract_dir/DSH.app"
+              extracted_executable="$extracted_app/Contents/MacOS/DSH"
+              if [[ ! -x "$extracted_executable" ]]; then
+                echo "::error::${zip_path} does not contain an executable DSH.app."
+                exit 1
+              fi
+              case "$(basename "$zip_path")" in
+                *-arm64.zip) expected_zip_arch='arm64' ;;
+                *-x64.zip) expected_zip_arch='x86_64' ;;
+                *)
+                  echo "::error::Could not infer architecture from ZIP name: ${zip_path}."
+                  exit 1
+                  ;;
+              esac
+              extracted_arches=$(lipo -archs "$extracted_executable")
+              if [[ "$extracted_arches" != "$expected_zip_arch" ]]; then
+                echo "::error::${zip_path} contains ${extracted_arches}, expected ${expected_zip_arch}."
+                exit 1
+              fi
+
+              codesign --verify --deep --strict --verbose=2 "$extracted_app"
+              extracted_signature=$(codesign --display --verbose=4 "$extracted_app" 2>&1)
+              if ! grep -q '^Authority=Developer ID Application:' <<< "$extracted_signature"; then
+                echo "::error::${zip_path} does not contain a Developer ID Application build."
+                exit 1
+              fi
+              spctl --assess --type execute --verbose=4 "$extracted_app"
+              xcrun stapler validate "$extracted_app"
+
+              trap - EXIT
+              cleanup_extract
+            )
+          done
+
+          for dmg_path in "${dmg_assets[@]}"; do
+            (
+              mount_dir="$RUNNER_TEMP/dsh-dmg-${RANDOM}-${RANDOM}"
+              mkdir -p "$mount_dir"
+              attached=0
+              cleanup_mount() {
+                if [[ "$attached" -eq 1 ]]; then
+                  hdiutil detach "$mount_dir" >/dev/null 2>&1 || true
+                fi
+                rmdir "$mount_dir" >/dev/null 2>&1 || true
+              }
+              trap cleanup_mount EXIT
+
+              hdiutil verify "$dmg_path"
+              hdiutil attach "$dmg_path" -readonly -nobrowse -mountpoint "$mount_dir" >/dev/null
+              attached=1
+
+              installed_app="$mount_dir/DSH.app"
+              installed_executable="$installed_app/Contents/MacOS/DSH"
+              if [[ ! -x "$installed_executable" ]]; then
+                echo "::error::${dmg_path} does not contain an executable DSH.app."
+                exit 1
+              fi
+              if [[ ! -L "$mount_dir/Applications" || "$(readlink "$mount_dir/Applications")" != '/Applications' ]]; then
+                echo "::error::${dmg_path} does not contain the expected /Applications link."
+                exit 1
+              fi
+
+              case "$(basename "$dmg_path")" in
+                *-arm64.dmg) expected_dmg_arch='arm64' ;;
+                *-x64.dmg) expected_dmg_arch='x86_64' ;;
+                *)
+                  echo "::error::Could not infer architecture from DMG name: ${dmg_path}."
+                  exit 1
+                  ;;
+              esac
+              installed_arches=$(lipo -archs "$installed_executable")
+              if [[ "$installed_arches" != "$expected_dmg_arch" ]]; then
+                echo "::error::${dmg_path} contains ${installed_arches}, expected ${expected_dmg_arch}."
+                exit 1
+              fi
+
+              codesign --verify --deep --strict --verbose=2 "$installed_app"
+              installed_signature=$(codesign --display --verbose=4 "$installed_app" 2>&1)
+              if ! grep -q '^Authority=Developer ID Application:' <<< "$installed_signature"; then
+                echo "::error::${dmg_path} does not contain a Developer ID Application build."
+                exit 1
+              fi
+              spctl --assess --type execute --verbose=4 "$installed_app"
+              xcrun stapler validate "$installed_app"
+
+              hdiutil detach "$mount_dir" >/dev/null
+              attached=0
+              rmdir "$mount_dir"
+              trap - EXIT
+            )
+          done
+
+          MANIFEST_PATH="$manifest" \
+          OUTPUT_DIR="$output_dir" \
+          EXPECTED_VERSION="$DESKTOP_VERSION" \
+          node <<'NODE'
+          const { createHash } = require('node:crypto')
+          const fs = require('node:fs')
+          const path = require('node:path')
+          const yaml = require('js-yaml')
+
+          function check(condition, message) {
+            if (!condition) {
+              throw new Error(message)
+            }
+          }
+
+          function requireEnv(name) {
+            const value = process.env[name]
+            check(typeof value === 'string' && value.length > 0, `${name} is not set`)
+            return value
+          }
+
+          function checkSameSet(actual, expected, label) {
+            const actualSet = new Set(actual)
+            const expectedSet = new Set(expected)
+            const missing = [...expectedSet].filter((name) => !actualSet.has(name))
+            const extra = [...actualSet].filter((name) => !expectedSet.has(name))
+
+            check(
+              missing.length === 0 && extra.length === 0,
+              `${label} mismatch; missing=${JSON.stringify(missing)}, extra=${JSON.stringify(extra)}`,
+            )
+          }
+
+          function sha512(filePath) {
+            return new Promise((resolveHash, rejectHash) => {
+              const hash = createHash('sha512')
+              const input = fs.createReadStream(filePath)
+
+              input.on('error', rejectHash)
+              input.on('data', (chunk) => hash.update(chunk))
+              input.on('end', () => resolveHash(hash.digest('base64')))
+            })
+          }
+
+          async function main() {
+            const manifestPath = path.resolve(requireEnv('MANIFEST_PATH'))
+            const outputDir = path.resolve(requireEnv('OUTPUT_DIR'))
+            const expectedVersion = requireEnv('EXPECTED_VERSION')
+            const manifest = yaml.load(
+              fs.readFileSync(manifestPath, 'utf8'),
+              { schema: yaml.JSON_SCHEMA },
+            )
+
+            check(
+              manifest !== null && typeof manifest === 'object' && !Array.isArray(manifest),
+              'latest-mac.yml must contain one mapping',
+            )
+            check(
+              manifest.version === expectedVersion,
+              `manifest version ${JSON.stringify(manifest.version)} does not equal ${expectedVersion}`,
+            )
+            check(Array.isArray(manifest.files), 'manifest files must be an array')
+            check(
+              manifest.files.length === 4,
+              `expected exactly four manifest file records, found ${manifest.files.length}`,
+            )
+
+            const seenUrls = new Set()
+            for (const [index, file] of manifest.files.entries()) {
+              check(
+                file !== null && typeof file === 'object' && !Array.isArray(file),
+                `files[${index}] must be a mapping`,
+              )
+              check(
+                typeof file.url === 'string' && file.url.length > 0,
+                `files[${index}].url must be a non-empty string`,
+              )
+              check(
+                file.url !== '.' &&
+                  file.url !== '..' &&
+                  !file.url.includes('/') &&
+                  !file.url.includes('\\') &&
+                  path.basename(file.url) === file.url,
+                `files[${index}].url is not a safe artifact basename: ${JSON.stringify(file.url)}`,
+              )
+              check(
+                typeof file.sha512 === 'string' && file.sha512.length > 0,
+                `files[${index}].sha512 must be a non-empty string`,
+              )
+              check(
+                Number.isSafeInteger(file.size) && file.size > 0,
+                `files[${index}].size must be a positive safe integer`,
+              )
+              check(!seenUrls.has(file.url), `duplicate manifest URL: ${file.url}`)
+              seenUrls.add(file.url)
+            }
+
+            for (const extension of ['dmg', 'zip']) {
+              const records = manifest.files.filter((file) =>
+                file.url.endsWith(`.${extension}`),
+              )
+              check(
+                records.length === 2,
+                `expected exactly two .${extension} records, found ${records.length}`,
+              )
+
+              for (const arch of ['arm64', 'x64']) {
+                const matches = records.filter((file) =>
+                  file.url.endsWith(`-${arch}.${extension}`),
+                )
+                check(
+                  matches.length === 1,
+                  `expected exactly one ${arch} .${extension} record, found ${matches.length}`,
+                )
+              }
+            }
+
+            const dirents = fs.readdirSync(outputDir, { withFileTypes: true })
+            const localArtifacts = dirents
+              .filter(
+                (entry) =>
+                  entry.isFile() &&
+                  (entry.name.endsWith('.dmg') || entry.name.endsWith('.zip')),
+              )
+              .map((entry) => entry.name)
+
+            check(
+              localArtifacts.length === 4,
+              `expected exactly four local DMG/ZIP artifacts, found ${localArtifacts.length}`,
+            )
+            checkSameSet(
+              localArtifacts,
+              manifest.files.map((file) => file.url),
+              'manifest/local artifact set',
+            )
+
+            for (const file of manifest.files) {
+              const artifactPath = path.join(outputDir, file.url)
+              const stat = fs.statSync(artifactPath)
+
+              check(stat.isFile(), `${file.url} is not a regular file`)
+              check(
+                stat.size === file.size,
+                `${file.url} size mismatch: manifest=${file.size}, local=${stat.size}`,
+              )
+              check(
+                await sha512(artifactPath) === file.sha512,
+                `${file.url} SHA-512 mismatch`,
+              )
+            }
+
+            check(
+              typeof manifest.path === 'string' && manifest.path.endsWith('.zip'),
+              `legacy path must reference a ZIP: ${JSON.stringify(manifest.path)}`,
+            )
+            const legacyFile = manifest.files.find((file) => file.url === manifest.path)
+            check(legacyFile !== undefined, 'legacy path is not present in files')
+            check(
+              typeof manifest.sha512 === 'string' &&
+                manifest.sha512 === legacyFile.sha512,
+              'legacy sha512 does not match the files entry selected by legacy path',
+            )
+
+            const blockmaps = dirents
+              .filter((entry) => entry.isFile() && entry.name.endsWith('.blockmap'))
+              .map((entry) => entry.name)
+            const zipBlockmaps = blockmaps.filter((name) =>
+              name.endsWith('.zip.blockmap'),
+            )
+            const dmgBlockmaps = blockmaps.filter((name) =>
+              name.endsWith('.dmg.blockmap'),
+            )
+
+            check(
+              zipBlockmaps.length === 2,
+              `expected exactly two ZIP blockmaps, found ${zipBlockmaps.length}`,
+            )
+            check(
+              dmgBlockmaps.length === 2,
+              `expected exactly two DMG blockmaps, found ${dmgBlockmaps.length}`,
+            )
+            checkSameSet(
+              blockmaps,
+              manifest.files.map((file) => `${file.url}.blockmap`),
+              'blockmap/artifact set',
+            )
+            for (const blockmap of blockmaps) {
+              check(
+                fs.statSync(path.join(outputDir, blockmap)).size > 0,
+                `${blockmap} is empty`,
+              )
+            }
+
+            console.log(
+              `Verified latest-mac.yml: ${manifest.files.length} artifacts and ${blockmaps.length} blockmaps`,
+            )
+          }
+
+          main().catch((error) => {
+            const message = error instanceof Error ? error.message : String(error)
+            const escaped = message
+              .replaceAll('%', '%25')
+              .replaceAll('\r', '%0D')
+              .replaceAll('\n', '%0A')
+            console.error(`::error title=Invalid latest-mac.yml::${escaped}`)
+            process.exitCode = 1
+          })
+          NODE
+
+      - name: Create or update draft GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          output_dir='apps/desktop/release'
+          assets=(
+            "$output_dir"/*.dmg
+            "$output_dir"/*.zip
+            "$output_dir"/*.blockmap
+            "$output_dir/latest-mac.yml"
+          )
+
+          release_is_draft=$(gh release view "$GITHUB_REF_NAME" --repo "$DESKTOP_RELEASE_REPOSITORY" --json isDraft --jq '.isDraft' 2>/dev/null || true)
+          if [[ "$release_is_draft" == 'true' ]]; then
+            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --repo "$DESKTOP_RELEASE_REPOSITORY" --clobber
+          elif [[ -n "$release_is_draft" ]]; then
+            echo "::error::Release ${GITHUB_REF_NAME} is already published and will not be overwritten."
+            exit 1
+          else
+            gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
+              --repo "$DESKTOP_RELEASE_REPOSITORY" \
+              --verify-tag \
+              --draft \
+              --title "DSH ${DESKTOP_VERSION}" \
+              --generate-notes
+          fi
+
+      - name: Remove notarization key
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "${APPLE_API_KEY:-}" ]]; then
+            rm -f -- "$APPLE_API_KEY"
+          fi

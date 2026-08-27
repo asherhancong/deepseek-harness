@@ -1,7 +1,13 @@
 /** Behavior of the /api browser-trust fence (rebinding + cross-site defense). */
 
 import { describe, expect, it } from 'vitest'
-import { assertTrustedAuthority, isTrustedApiRequest } from '../src/api-request-trust.ts'
+import {
+  assertDesktopCapability,
+  DESKTOP_CAPABILITY_HEADER,
+  hasDesktopCapability,
+  assertTrustedAuthority,
+  isTrustedApiRequest,
+} from '../src/api-request-trust.ts'
 
 function request(headers: Record<string, string | undefined>): { headers: Record<string, string | undefined> } {
   return { headers }
@@ -104,5 +110,23 @@ describe('isTrustedApiRequest', () => {
     expect(isTrustedApiRequest(request({ ...markers, host: 'bad host' }), [])).toBe(false)
     expect(isTrustedApiRequest(request({ ...markers, host: '127.0.0.999' }), [])).toBe(false)
     expect(isTrustedApiRequest(request({ ...markers, host: '128.0.0.1' }), [])).toBe(false)
+  })
+})
+
+describe('desktop capability', () => {
+  const capability = 'A'.repeat(43)
+
+  it('is opt-in and requires an exact per-launch header when configured', () => {
+    expect(hasDesktopCapability(request({}), undefined)).toBe(true)
+    expect(hasDesktopCapability(request({}), capability)).toBe(false)
+    expect(hasDesktopCapability(request({ [DESKTOP_CAPABILITY_HEADER]: 'B'.repeat(43) }), capability)).toBe(false)
+    expect(hasDesktopCapability(request({ [DESKTOP_CAPABILITY_HEADER]: capability }), capability)).toBe(true)
+  })
+
+  it('accepts only unpadded base64url for exactly 32 random bytes', () => {
+    expect(() => { assertDesktopCapability(capability) }).not.toThrow()
+    for (const malformed of ['', 'A'.repeat(42), 'A'.repeat(44), `${'A'.repeat(42)}=`, `${'A'.repeat(42)}+`]) {
+      expect(() => { assertDesktopCapability(malformed) }).toThrow(/exactly 32 random bytes/)
+    }
   })
 })

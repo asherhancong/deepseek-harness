@@ -24,6 +24,18 @@ packages:
 # builds must resolve those matching names to this workspace's pinned sources.
 linkWorkspacePackages: true
 
+# Desktop release jobs build both macOS architectures on one macOS runner.
+# Retain each developer/CI host while materializing both Darwin optional trees
+# so architecture-specific binaries such as ripgrep enter the matching DMG.
+supportedArchitectures:
+  os:
+    - current
+    - darwin
+  cpu:
+    - current
+    - arm64
+    - x64
+
 overrides:
   '@deepseek-ai/cosmokit': 'link:vendor/cosmokit'
   '@deepseek-ai/schemastery': 'link:vendor/schemastery'
@@ -38,6 +50,11 @@ peerDependencyRules:
 # default and only allow scripts we need. esbuild (native binary) and lefthook
 # (git hooks) genuinely need theirs.
 allowBuilds:
+  # Electron downloads its reviewed platform runtime during installation.
+  electron: true
+  # electron-builder carries its Windows Squirrel helper on every platform;
+  # macOS DMG builds never need that package's install script.
+  electron-winstaller: false
   esbuild: true
   lefthook: true
   # Cross-platform boundary for the persistent PTY backend, including ConPTY on Windows.
@@ -53,7 +70,6 @@ allowBuilds:
   # The Python runtime deploy includes the reviewed workspace postinstall that
   # restores the executable bit on node-pty's macOS spawn helper.
   '@deepseek-ai/dsh-subprocess-local@file:packages/subprocess/subprocess-local': true
-
 minimumReleaseAgeExclude:
   # Fresh pi-ai releases carry the model catalog updates that are the whole
   # point of bumping it; waiting out the release age would defeat that.

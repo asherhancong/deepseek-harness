@@ -29,13 +29,14 @@ Directories layer as follows:
     - **Pure libraries** (`ui-slots`, `ui-primitives`, plus the `loader` kernel package): ordinary root-index packages, statically bundled into the shell; the two client libraries are seeded into the module table.
     - **Static-arrival entry packages** (`connection`, `runtime`, `ui-theme`, `i18n`, `hmr`): no `dsh.client` key and no browser bundle — the shell bundles their `src/client/` half and registers it with `ctx.modules`; they are governed as entries of the host-authored graph like everything else.
     - **Fetch-arrival plugin packages** (`ui-layout`, `ui-sidebar`, `ui-conversation`, `ui-trajectory`): dual-entry — the root index is the node half (an empty `apply`, existing so the host Loader governs lifecycle and the web plugin registry discovers the package.json `dsh.client` declaration); the implementation lives under `src/client/`, shipped as the `./client` subpath (a tsdown closure-factory bundle). Cross-plugin consumption of `/client` is type-only; value cooperation goes through cordis services.
-- `apps/` holds the externally exported applications, assembled from Client / Host mixtures.
+- `apps/` holds runnable application assemblies and application-specific build roots; each runnable app owns whether it is published, embedded, or privately distributed.
     - `apps/web` (`dsh-web-frontend`) is the vite application: a thin `main.ts` over the shell API exported by `dsh-client-web`.
     - `apps/cli` (`@deepseek-ai/dsh`) dispatches commands: `dsh web` = Host + webserver + the built `dsh-web-frontend` dist; `dsh --profile headless` = [a direct core Agent/Session entry point](2026-08-09-headless-direct-core-entry-point.md), with zero Host, HTTP, or browser layer.
-    - A future Electron application reuses the same web client packages over an IPC fetch carrier.
+    - `apps/desktop` (`@deepseek-ai/dsh-desktop`) is the private macOS Electron owner: it reuses the complete Web HTTP/WebSocket composition over an application-owned loopback origin; a future IPC carrier remains a transport reservation ([desktop distribution decision](2026-08-27-macos-electron-desktop-distribution.md)).
+    - `apps/desktop-runtime` is the private, dependency-only deployment root for the packaged CLI closure. It has no application entry point and exists only to make pnpm's deploy graph explicit ([desktop distribution decision](2026-08-27-macos-electron-desktop-distribution.md)).
 
 ```
-apps/*  (applications: apps/web = vite app, apps/cli = bin dispatch)
+apps/*  (runnable assemblies plus desktop's dependency-only deploy root)
   │ consume
   ▼
 packages/host/*                      packages/client/*
@@ -51,7 +52,7 @@ Direction discipline (every rule auditable from package deps):
 
 - `runtime → apiproxy` is one-way; apiproxy depends only on type definitions.
 - Client-side packages **never import** host-side package runtime (they consume only the two browser-safe subpaths `/api` and `/client`).
-- `webserver` does not depend on `runtime`: it provides an implementation of the `{ fetch }` interface — "webserver ← runtime" is a runtime injection relationship, not a package dependency.
+- `webserver` does not depend on `runtime`: feature routes, the fallback, and index providers arrive through service/event injection — "webserver ← runtime" is a composition relationship, not a package dependency.
 - Cross-package client imports use the `/client` subpath for plugin packages, and between plugin packages they are type-only — a cross-plugin value import is a build error at the tsdown purity gate (value cooperation goes through cordis services; the [client plugin loading note](2026-07-23-client-plugin-loading-model.md) owns the edge rules).
 
 TypeScript checks in **two aggregate programs** referenced by a solution root (`tsconfig.json` = solution; `tsconfig.host.json` = host side + tests, excluding `packages/client`; `tsconfig.client.json` = client packages and their tests): both sides merge the cordis `Context` interface under the same keys (`sessions`, `loader`) with different services, so one program would see both declaration merges and report a collision. Shared leaves (session/llm/tools/apiproxy…) build once and are referenced by both programs ([topology](../process/2026-07-22-tsconfig-solution-root-two-aggregates.md)).
@@ -64,10 +65,10 @@ On the protocol side: TS interfaces (`packages/host/apiproxy/src/api/`, zero Nod
 |---|---|---|---|
 | Front layer | `dsh-host-apiproxy` | TS/zod definitions (api/) + the fetch abstraction (fetch/: handler + client base class) | Keep it simple — every consumer needs it; importable from Node and browser alike; protocol content in the "Message protocol" sections below; clients must not bypass api through ctx |
 | Assembly layer | `dsh-host-runtime` | Plugin composition + ApiProxy integration + the web UI plugin mount (in-memory Loader tree over the eight dsh.client packages); home of host-level configuration (defaults/persistenceRoot, future user profile) | Which plugins mount and with what defaults is decided only here; shells must not alter the assembly |
-| Carrier layer | `dsh-host-webserver` | Web HTTP and upgrade: static serving + `/api/*`→handler forwarding + WebSocket upgrade route + close semantics; plugin bundle endpoint + `__DSH_BOOT__` manifest injection (fed by the web plugin registry) | Web (browser access) only; zero workspace dependencies (the registry arrives by structural injection); Electron does not reuse it |
+| Carrier layer | `dsh-host-webserver` | `node:http` lifecycle plus exact/prefix HTTP routes, exact upgrade routes, one fallback, index injection hooks, and close semantics; feature routes and file serving belong to injected owners | Chromium/browser carriage; no dependency on host runtime or an assembly package; the first desktop release reuses it over an application-owned loopback origin |
 | Client libraries | `dsh-client-ui-slots` / `dsh-client-ui-primitives` | Slot contracts / pure React atoms | Seeded into the loader module table by the shell |
 | Client plugins | `dsh-client-connection` / `dsh-client-runtime` / `dsh-client-ui-theme` / `dsh-client-ui-renderer` / feature UI packages | Browser-side Cordis plugin tree: wire consumer, core services, theme, React rendering, and feature composition — see the web client architecture note | Dual entry (node half = empty apply; implementation in `src/client/`); cross-plugin value cooperation uses services and slots |
-| Application | `@deepseek-ai/dsh` (apps/cli) + `dsh-web-frontend` (apps/web, the vite application) | Coarse bin dispatch + one assembly module per application (web.ts / headless.ts); the vite app is a thin main over the `dsh-client-web` shell surface | Applications use dynamic imports so they never load each other; workspace knowledge like dist location stays in the app |
+| Application | `@deepseek-ai/dsh` (apps/cli) + `dsh-web-frontend` (apps/web) + `@deepseek-ai/dsh-desktop` (apps/desktop) | Coarse bin dispatch and Web/headless assembly; thin vite entry; private Electron process, window, and distribution owner | CLI modes load dynamically; desktop owns its packaged CLI child; workspace and distribution knowledge stays in the app |
 
 #### Naming rule
 
@@ -75,11 +76,11 @@ Packages under `packages/host/*` and `packages/client/*` **must carry the direct
 
 #### How to integrate a new application (operational checklist)
 
-1. **Pick a fetch impersonation**: browser same-origin HTTP / in-process `host.handler.fetch` injection / your own transport-aspect subclass (e.g. future Electron IPC, see the "Subclass table" below).
-2. **Write an assembly module under `apps/`**: `startHost()` + a client subclass + the application's private signal/print/exit semantics; a mixture never becomes a package — assembly is written in the app.
-3. **Import `dsh-host-webserver` only if you need HTTP carriage**, otherwise zero ports.
+1. **Pick an application shape**: browser same-origin HTTP / in-process `host.handler.fetch` injection / your own transport-aspect subclass (e.g. a future native Electron IPC carrier) / an owned wrapper around an existing complete application composition.
+2. **Keep the ownership under `apps/`**: an in-process carrier app writes `startHost()` + a client subclass; a wrapper app owns its child process and boundary; private signal/print/exit behavior stays with that app rather than becoming a capability package.
+3. **Import `dsh-host-webserver` only for an in-process HTTP composition**; a wrapper may instead start the existing `dsh web` application and own its loopback lifecycle.
 
-The two existing applications preserve the division: the Web application mounts Host, carrier, and browser composition, while `dsh --profile headless` mounts a direct core runner with zero Host, HTTP, or ports. ACP-class protocol bridges do not follow the client-carrier checklist: they expose core to the external ecosystem and mount directly via `ctx.plugin(entry-point plugin)` without fetch.
+The existing application assemblies preserve the division: the Web application mounts Host, carrier, and browser composition; `dsh --profile headless` mounts a direct core runner with zero Host, HTTP, or ports; and the desktop application owns a `dsh web` child plus its loopback window boundary. ACP-class protocol bridges do not follow the client-carrier checklist: they expose core to the external ecosystem and mount directly via `ctx.plugin(entry-point plugin)` without fetch.
 
 ## Message protocol
 
@@ -240,10 +241,10 @@ Every client consumes one contract: adding a unary method is a five-step mechani
 
 | Rejected | One-line reason |
 |---|---|
-| Packaging by product (a web family, an electron family) | Products share host/client capabilities rather than an application implementation; capability-provider layering means a new application needs zero new packages |
+| Packaging capabilities by product (a web family, an electron family) | Products share host/client capabilities rather than an application implementation; a private application package may own assembly and distribution without duplicating capability-library families |
 | A package per mixture (e.g. a standalone headless package) | A mixture has exactly one consumer (its own app); packaging it is ownerless abstraction, while assembly in the app is readable and disposable |
 | Consuming clients connecting to ctx directly (skipping the apiproxy layer) | Clients require wire validation, observability, and multi-client consistency. Direct headless is a local entry point with no client boundary and uses the public Agent/Session seams rather than a client command plane |
-| webserver depending on runtime (saving the handler injection) | Structural-typing injection keeps webserver reusable by sidecars/tests with zero workspace deps; a package dependency would drag assembly knowledge into the carrier layer |
+| webserver depending on runtime (saving the handler injection) | Structural injection keeps webserver reusable by sidecars/tests without depending on the Host assembly; that package dependency would drag assembly knowledge into the carrier layer |
 | Package names without the group prefix (continuing dsh-<tail>) | `dsh-runtime`/`dsh-web-ui` lose their belonging in the flat npm namespace; the cost is one explicit paths entry per package |
 | Reusing the in-repo JSON-RPC 2.0 (dsh-sdk-jsonrpc-server) | Numeric error codes degrade to a single fallback code, contracts get aligned by hand in two copies, and naming drifts without a convention |
 | A three-envelope model (Request/Response/Frame envelopes, signatures direction-blind) | rpcId correlation is logical-layer; frame and response direction semantics inferred from the channel break the moment the carrier changes |

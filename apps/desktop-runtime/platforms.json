@@ -1,0 +1,10 @@
+{
+  "macos-arm64": {
+    "tag": "macosx_13_0_arm64",
+    "executable": "DSH-arm64"
+  },
+  "macos-x64": {
+    "tag": "macosx_13_0_x86_64",
+    "executable": "DSH-x64"
+  }
+}
