@@ -136,7 +136,7 @@ describe('package modes', () => {
     }))).toEqual([
       'packages/client/web/src/platform.ts: parser-preloaded external '
       + '"@deepseek-ai/dsh-client-runtime/client" has no matching PARSER_PRELOAD_IDS row in '
-      + 'packages/client/modules/src/index.ts',
+      + 'packages/client/modules/src/web-binding.ts',
     ])
   })
 })

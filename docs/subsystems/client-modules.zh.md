@@ -82,7 +82,7 @@ Generated from source by `scripts/gen-cordis-catalog.ts` (verified fresh by `pnp
 
 ### `ctx.clientModules` — `ClientModuleRegistry`
 
-The web plugin table service: incremental `dsh.client` scan + wire composition + bundle route + index injection rows. Construction runs the activation scan synchronously — a malformed declaration or missing bundle among the already-loaded entries aggregates into one loud throw (FAILED fiber; the boot activation audit reports it).
+The web plugin table service: incremental `dsh.client` scan, HMR-facing graph notifications, and the WebServer binding. Construction runs the activation scan synchronously — malformed declarations or missing bundles among already-loaded entries aggregate into one loud throw.
 
 ```ts cordis-catalog
 /**

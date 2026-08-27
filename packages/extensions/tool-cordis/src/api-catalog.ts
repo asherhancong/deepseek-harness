@@ -503,8 +503,8 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
   },
   {
     key: 'clientModules',
-    summary: 'The web plugin table service: incremental `dsh.client` scan + wire composition + bundle route + index injection rows.',
-    description: 'The web plugin table service: incremental `dsh.client` scan + wire composition + bundle route + index injection rows. Construction runs the activation scan synchronously — a malformed declaration or missing bundle among the already-loaded entries aggregates into one loud throw (FAILED fiber; the boot activation audit reports it).',
+    summary: 'The web plugin table service: incremental `dsh.client` scan, HMR-facing graph notifications, and the WebServer binding.',
+    description: 'The web plugin table service: incremental `dsh.client` scan, HMR-facing graph notifications, and the WebServer binding. Construction runs the activation scan synchronously — malformed declarations or missing bundles among already-loaded entries aggregate into one loud throw.',
     methods: [
       {
         signature: 'graph(): WebBootGraph',

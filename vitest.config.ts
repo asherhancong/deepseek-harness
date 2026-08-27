@@ -217,6 +217,8 @@ export default defineConfig({
         // whose remaining branches need real-composition/process harnesses.
         // TODO(gui): cover and remove with the client test lane above.
         'packages/client/modules/src/index.ts',
+        'packages/client/modules/src/registry-state.ts',
+        'packages/client/modules/src/web-binding.ts',
         'packages/client/modules/src/invariant.ts',
         'packages/client/modules/src/client/index.ts',
         'packages/client/modules/src/client/manifest.ts',

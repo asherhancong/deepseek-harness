@@ -7,8 +7,13 @@ import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { runInNewContext } from 'node:vm'
 import { Context } from '@deepseek-ai/cordis'
-import { afterEach, describe, expect, it } from 'vitest'
-import { renderIndexInjections, type WebServer, type WebRoute } from '@deepseek-ai/dsh-host-webserver'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import {
+  renderIndexInjections,
+  type IndexInjection,
+  type WebServer,
+  type WebRoute,
+} from '@deepseek-ai/dsh-host-webserver'
 import * as modulesClient from '../src/client/index.ts'
 import { ClientModuleRegistry, bootInjections, orderByModuleGraph } from '../src/index.ts'
 import type { ClientModuleLoaderTarget, WebBootEntry, WebBootGraph } from '../src/client/index.ts'
@@ -44,14 +49,15 @@ function writePackage(
 }
 
 /** Create a built package with the supplied client declaration. */
-function writeBuiltPackage(packageName: string, client: Record<string, unknown>): void {
+function writeBuiltPackage(packageName: string, client: Record<string, unknown>): string {
   const clientPath = writePackage(packageName, { dsh: { client: { platform: 'web', ...client } } })
   mkdirSync(dirname(clientPath), { recursive: true })
   writeFileSync(clientPath, 'module.exports = {}\n')
+  return clientPath
 }
 
 /** Construct the node-half service and capture its plugin-bundle route. */
-function constructWithRoute(packageNames: string[]): { service: ClientModuleRegistry; route: WebRoute } {
+function constructWithRoute(packageNames: string[]): { ctx: Context; service: ClientModuleRegistry; route: WebRoute } {
   const ctx = new Context()
   ctx.baseUrl = pathToFileURL(root!).href + '/'
   ctx.provide('loader', {
@@ -73,12 +79,36 @@ function constructWithRoute(packageNames: string[]): { service: ClientModuleRegi
   ctx.provide('webServer', webServer as WebServer)
   const service = new ClientModuleRegistry(ctx)
   if (route === undefined) throw new Error('client bundle route was not registered')
-  return { service, route }
+  return { ctx, service, route }
 }
 
 /** Construct the node-half service over the enabled fixture entries. */
 function construct(packageNames: string[]): ClientModuleRegistry {
   return constructWithRoute(packageNames).service
+}
+
+/** Invoke a captured WebServer route with a minimal node:http response fake. */
+async function invokeRoute(route: WebRoute, method: string, url: string): Promise<{
+  status: number
+  headers: Record<string, string> | undefined
+  body: string
+}> {
+  let status = 0
+  let headers: Record<string, string> | undefined
+  let body = ''
+  const response = {
+    writeHead(nextStatus: number, nextHeaders?: Record<string, string>) {
+      status = nextStatus
+      headers = nextHeaders
+      return response
+    },
+    end(chunk?: string | Uint8Array) {
+      body = chunk === undefined ? '' : Buffer.from(chunk).toString('utf8')
+      return response
+    },
+  } as unknown as ServerResponse
+  await route.handler({ method, url } as IncomingMessage, response)
+  return { status, headers, body }
 }
 
 /** Execute the exact first inline script emitted by the Host boot rows. */
@@ -217,32 +247,103 @@ describe('client bundle activation', () => {
     const map = '{"version":3,"sources":["src/client/index.tsx"]}\n'
     writeFileSync(`${clientPath}.map`, map)
     const { route } = constructWithRoute([packageName])
-    let status = 0
-    let headers: Record<string, string> | undefined
-    let body = ''
-    const response = {
-      writeHead(nextStatus: number, nextHeaders?: Record<string, string>) {
-        status = nextStatus
-        headers = nextHeaders
-        return response
-      },
-      end(chunk?: Uint8Array) {
-        body = chunk === undefined ? '' : Buffer.from(chunk).toString('utf8')
-        return response
-      },
-    } as unknown as ServerResponse
+    const response = await invokeRoute(route, 'GET', `/plugins/${packageName}/client.js.map`)
 
-    await route.handler({
-      method: 'GET',
-      url: `/plugins/${packageName}/client.js.map`,
-    } as IncomingMessage, response)
-
-    expect(status).toBe(200)
-    expect(headers).toEqual({
+    expect(response.status).toBe(200)
+    expect(response.headers).toEqual({
       'content-type': 'application/json; charset=utf-8',
       'cache-control': 'no-cache',
     })
-    expect(body).toBe(map)
+    expect(response.body).toBe(map)
+  })
+
+  it('preserves the Web carrier method and missing-resource responses', async () => {
+    const packageName = '@fixture/route-matrix'
+    const clientPath = writeBuiltPackage(packageName, {})
+    writeFileSync(clientPath, 'module.exports = { route: true }\n')
+    const { route } = constructWithRoute([packageName])
+
+    const bundle = await invokeRoute(route, 'HEAD', `/plugins/${packageName}/client.js`)
+    expect(bundle).toMatchObject({
+      status: 200,
+      headers: {
+        'content-type': 'text/javascript; charset=utf-8',
+        'cache-control': 'no-cache',
+      },
+    })
+    expect((await invokeRoute(route, 'POST', `/plugins/${packageName}/client.js`)).status).toBe(405)
+    expect((await invokeRoute(route, 'GET', '/plugins/unknown/client.js')).status).toBe(404)
+    expect((await invokeRoute(route, 'GET', `/plugins/${packageName}/not-client.js`)).status).toBe(404)
+    expect((await invokeRoute(route, 'GET', `/plugins/${packageName}/client.js.map`)).status).toBe(404)
+  })
+})
+
+describe('registry lifecycle and notifications', () => {
+  it('coalesces Loader entry changes and withdraws a removed package', async () => {
+    const packageName = '@fixture/incremental-entry'
+    writeBuiltPackage(packageName, {})
+    const packageNames: string[] = []
+    const { ctx, service } = constructWithRoute(packageNames)
+    const graphChanged = vi.fn()
+    service.onGraphChanged(graphChanged)
+    const fiber = { entry: { options: { name: packageName } } }
+
+    ctx.emit('internal/plugin', {} as never)
+    packageNames.push(packageName)
+    ctx.emit('internal/plugin', fiber as never)
+    ctx.emit('internal/plugin', fiber as never)
+    await Promise.resolve()
+
+    expect(service.graph().entries.map(row => row.id)).toEqual([packageName])
+    expect(graphChanged).toHaveBeenCalledTimes(1)
+
+    packageNames.length = 0
+    ctx.emit('internal/plugin', fiber as never)
+    await Promise.resolve()
+
+    expect(service.graph().entries).toEqual([])
+    expect(graphChanged).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps graph identity stable, orders rebuild notifications, and injects the live graph', () => {
+    const packageName = '@fixture/rebuilt'
+    const clientPath = writeBuiltPackage(packageName, {})
+    const { ctx, service } = constructWithRoute([packageName])
+    const initial = service.graph()
+    const events: string[] = []
+    const logError = vi.spyOn(ctx.logger, 'error').mockImplementation(() => undefined)
+    service.onRebuilt(() => {
+      events.push('rebuilt-throwing')
+      throw new Error('fixture listener failure')
+    })
+    const stopRebuilt = service.onRebuilt(() => { events.push('rebuilt') })
+    const stopGraph = service.onGraphChanged(() => { events.push('graph') })
+
+    expect(service.graph()).toBe(initial)
+    expect(service.rebuilt('unknown')).toBeUndefined()
+    expect(service.rebuilt(packageName)).toBe(initial.entries[0]?.rev)
+    expect(service.graph()).toBe(initial)
+    expect(events).toEqual([])
+
+    writeFileSync(clientPath, 'module.exports = { revision: 2 }\n')
+    const rev = service.rebuilt(packageName)
+    expect(rev).toEqual(expect.any(String))
+    expect(service.graph()).not.toBe(initial)
+    expect(service.graph().entries[0]?.url).toBe(`/plugins/${packageName}/client.js?rev=${rev}`)
+    expect(events).toEqual(['rebuilt-throwing', 'rebuilt', 'graph'])
+    expect(logError).toHaveBeenCalledTimes(1)
+
+    const injections: IndexInjection[] = []
+    ctx.emit('webserver/index-inject', injections)
+    const global = injections.find(row => row.kind === 'global' && row.name === '__DSH_BOOT__')
+    expect(global).toMatchObject({ kind: 'global', value: service.graph() })
+
+    stopRebuilt()
+    stopGraph()
+    events.length = 0
+    writeFileSync(clientPath, 'module.exports = { revision: 3 }\n')
+    service.rebuilt(packageName)
+    expect(events).toEqual(['rebuilt-throwing'])
   })
 })
 
