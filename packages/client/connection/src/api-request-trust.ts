@@ -14,8 +14,8 @@
  */
 
 import { timingSafeEqual } from 'node:crypto'
-import type { IncomingHttpHeaders } from 'node:http'
 import { isLoopbackHostname } from './loopback-hostname.ts'
+import type { ConnectionTrustRequest } from './rpc.ts'
 
 /** Header carrying the desktop process's per-launch 256-bit capability. */
 export const DESKTOP_CAPABILITY_HEADER = 'x-dsh-desktop-capability'
@@ -23,12 +23,7 @@ export const DESKTOP_CAPABILITY_HEADER = 'x-dsh-desktop-capability'
 /** Base64url without padding for exactly 32 random bytes. */
 const DESKTOP_CAPABILITY_PATTERN = /^[A-Za-z0-9_-]{43}$/
 
-/** The request facts the fence reads from either HTTP representation. */
-interface ApiTrustRequest {
-  headers: IncomingHttpHeaders | Headers
-}
-
-function header(headers: IncomingHttpHeaders | Headers, name: string): string | undefined {
+function header(headers: ConnectionTrustRequest['headers'], name: string): string | undefined {
   if (headers instanceof Headers) return headers.get(name) ?? undefined
   const value = headers[name]
   return typeof value === 'string' ? value : undefined
@@ -55,7 +50,7 @@ export function assertDesktopCapability(capability: string): void {
  * @param capability - Optional required desktop capability.
  * @returns true when auth is disabled or the supplied capability matches.
  */
-export function hasDesktopCapability(request: ApiTrustRequest, capability: string | undefined): boolean {
+export function hasDesktopCapability(request: ConnectionTrustRequest, capability: string | undefined): boolean {
   if (capability === undefined) return true
   const presented = header(request.headers, DESKTOP_CAPABILITY_HEADER)
   if (presented === undefined) return false
@@ -131,7 +126,7 @@ function isTrustedAuthority(hostUrl: URL, trustedHosts: readonly string[]): bool
  * @param trustedHosts - non-loopback authorities this deployment serves: exact `host:port`, or port-less `host` matching any port.
  * @returns true when the Host is ours (loopback or trusted) and any attached browser markers are same-origin.
  */
-export function isTrustedApiRequest(request: ApiTrustRequest, trustedHosts: readonly string[]): boolean {
+export function isTrustedApiRequest(request: ConnectionTrustRequest, trustedHosts: readonly string[]): boolean {
   // Host fence (DNS-rebinding defense), applied to every request: the browser
   // fills Host from the URL it believes it is talking to, so a rebound page
   // carries the attacker's domain here even though the socket lands on this

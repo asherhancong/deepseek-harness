@@ -6,7 +6,7 @@
 
 ## 运行时模型
 
-Electron 主进程在固定 loopback 地址 `http://127.0.0.1:43121` 上启动已暂存的独立 `dsh web` 运行时，等待自己持有的子进程打印完全匹配的就绪行，再用加固的 `BrowserWindow` 打开该 URL。固定 origin 能让浏览器本地的草稿与外观状态在多次启动间保持稳定。端口冲突会使启动失败，不会连接到无关进程。每次启动还会创建新的 256-bit capability：Electron 把它注入发往该桌面专属 origin 的 HTTP 与 WebSocket 请求，Host 则拒绝每条不携带完全匹配值的 Connection 自有 route。
+Electron 主进程在固定 loopback 地址 `http://127.0.0.1:43121` 上启动已暂存的独立 `dsh web` 运行时，等待自己持有的子进程打印完全匹配的就绪行，再用加固的 `BrowserWindow` 打开该 URL。固定 origin 能让浏览器本地的草稿与外观状态在多次启动间保持稳定。端口冲突会使启动失败，不会连接到无关进程。每次启动还会创建新的 256-bit capability：Electron 把它注入发往该桌面专属 origin 的 HTTP 与 WebSocket 请求。Connection 在服务 index、分发 API 请求或打开 Gateway 的 `/api/remote.mux` WebSocket 前验证该值。桌面启动使用干净 URL，无需交换浏览器 token 或持久认证 cookie；普通 `dsh web` 保留自身的浏览器认证。
 
 CLI 子进程把用户主目录作为初始工作目录。UI 中的 workspace 选择仍是指定项目目录的权威方式。桌面 bootstrap 会从私有匿名管道中一次性读取 capability、关闭该 descriptor，并在 Host 创建子进程前移除 Electron 的 Node 模式开关。退出应用会向子进程发送 `SIGTERM`，并在 CLI 的 5 秒关闭预算耗尽后升级为 `SIGKILL`；父进程 watchdog 还会在 Electron 异常退出后终止成为孤儿的 Host。
 

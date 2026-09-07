@@ -335,13 +335,6 @@ jobs:
             if [[ ! -s "$cli_runtime/lib/bin.js" ]]; then
               fail "${app_path}: missing packaged CLI entry: ${cli_runtime}/lib/bin.js"
             fi
-            if [[ ! -d "$cli_runtime/config" ]]; then
-              fail "${app_path}: missing packaged CLI config: ${cli_runtime}/config"
-            fi
-            runtime_config_entry=$(find "$cli_runtime/config" -type f -print -quit 2>/dev/null || true)
-            if [[ -z "$runtime_config_entry" ]]; then
-              fail "${app_path}: packaged CLI config is empty: ${cli_runtime}/config"
-            fi
             web_app_package_suffix='/node_modules/@deepseek-ai/dsh-web-app/package.json'
             web_app_package=$(find "$runtime/node_modules" -type f -path "*${web_app_package_suffix}" -print -quit 2>/dev/null || true)
             if [[ -z "$web_app_package" ]]; then
@@ -367,6 +360,21 @@ jobs:
           }
 
           const runtime = fs.realpathSync(process.env.DSH_RUNTIME)
+          const requireFromRuntime = createRequire(path.join(runtime, 'package.json'))
+          const presetsPackage = fs.realpathSync(
+            requireFromRuntime.resolve('@deepseek-ai/dsh-agent-presets/package.json'),
+          )
+          const standardPreset = fs.realpathSync(
+            path.join(path.dirname(presetsPackage), 'presets', 'standard', 'agent.cordis.yml'),
+          )
+          for (const artifact of [presetsPackage, standardPreset]) {
+            assertInsideRuntime('packaged agent presets', artifact, runtime)
+            const artifactStat = fs.statSync(artifact)
+            if (!artifactStat.isFile() || artifactStat.size === 0) {
+              throw new Error(`packaged agent preset artifact is missing or empty: ${artifact}`)
+            }
+          }
+
           const webAppPackage = fs.realpathSync(process.env.WEB_APP_PACKAGE)
           assertInsideRuntime('@deepseek-ai/dsh-web-app/package.json', webAppPackage, runtime)
 
@@ -383,7 +391,7 @@ jobs:
           process.stdout.write(webIndex)
           WEB_RESOLVE
             ); then
-              fail "${app_path}: could not resolve the packaged Web UI from ${web_app_package}"
+              fail "${app_path}: could not resolve the packaged agent presets or Web UI"
             fi
             if [[ ! -s "$web_index" ]]; then
               fail "${app_path}: packaged Web UI is missing or empty: ${web_index}"

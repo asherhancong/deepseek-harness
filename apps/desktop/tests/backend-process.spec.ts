@@ -151,6 +151,7 @@ describe('BackendProcess', () => {
     child.stdout.write(`prefix dsh web: http://127.0.0.1:${String(DESKTOP_BACKEND_PORT)}\n`)
     child.stdout.write(`dsh web: http://localhost:${String(DESKTOP_BACKEND_PORT)}\n`)
     child.stdout.write(`dsh web: http://127.0.0.1:${String(DESKTOP_BACKEND_PORT)} suffix\n`)
+    child.stdout.write(`dsh web: http://127.0.0.1:${String(DESKTOP_BACKEND_PORT)}/?token=browser-token\n`)
     clock.runNext()
 
     await rejected

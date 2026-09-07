@@ -6,7 +6,7 @@ Status: implemented
 
 ## 问题
 
-DSH 需要一个可安装的 macOS 客户端：它沿用 Web 产品的 UI 与客户端插件行为，无需终端即可启动完整的本地 Host，并且能够接收签名更新。现有浏览器组合把客户端 bundle 发现、HTML 启动注入、Typert Remote 调用、一元 API 调用和两条下行流绑定到 `dsh-host-webserver`；如果首个桌面安装包必须先替换每一种载体，安装包交付就会依赖第二套协议实现。
+DSH 需要一个可安装的 macOS 客户端：它沿用 Web 产品的 UI 与客户端插件行为，无需终端即可启动完整的本地 Host，并且能够接收签名更新。现有浏览器组合把客户端 bundle 发现、HTML 启动注入、Typert Remote 调用和多路复用 WebSocket 绑定到 `dsh-host-webserver`；如果首个桌面安装包必须先替换每一种载体，安装包交付就会依赖第二套协议实现。
 
 npm 发布序列把应用包视为公开且版本锁定的产物，而 DMG 应用需要独立版本、签名凭据、公证、架构产物和 GitHub 更新元数据。
 
@@ -16,13 +16,13 @@ npm 发布序列把应用包视为公开且版本锁定的产物，而 DMG 应�
 
 Electron 主进程持有一个运行于 `127.0.0.1:43121` 的 `dsh web` 子进程。它通过进入 Node 模式的 Electron 可执行文件启动已构建 CLI，只接受该子进程完全匹配的 URL 就绪通知，然后在 `BrowserWindow` 中加载该 URL。固定 origin 保留由 localStorage 支持的草稿和外观状态。端口已有 listener 时会明确启动失败；应用绝不探测并接管现有服务器。
 
-Loopback 可达性不是桌面授权边界。主进程每次启动都会生成新的 256-bit capability，并只把它交给后端 bootstrap 与 Electron session。它通过私有的一次性管道跨越进程边界，而不进入 argv、环境变量或磁盘。桌面专用 Cordis overlay 配置 Connection Host，让它在自己持有的每条 HTTP route 与 WebSocket upgrade 上要求该 capability。Electron 的请求层会在发往准确桌面 origin 的请求上以可信值替换 renderer 提供的任何同名 header，从而同时覆盖 `/api` 与专用 Connection RPC route；capability 从不进入页面 JavaScript。普通 `dsh web` 不应用该 overlay，并保留现有仅限可达性的行为。
+Loopback 可达性不是桌面授权边界。主进程每次启动都会生成新的 256-bit capability，并只把它交给后端 bootstrap 与 Electron session。它通过私有的一次性管道跨越进程边界，而不进入 argv、环境变量或磁盘。桌面专用 Cordis overlay 配置 Connection Host，让它在 HTML 入口、自己持有的每条 HTTP route 与 Gateway WebSocket upgrade 上要求该 capability。桌面就绪通知使用干净的 loopback URL，不在 URL 或日志中包含浏览器登录 token。Electron 的请求层会在发往准确桌面 origin 的请求上以可信值替换 renderer 提供的任何同名 header，从而同时覆盖 `/api` 与专用 Connection RPC route；capability 从不进入页面 JavaScript。普通 `dsh web` 不应用该 overlay，并保留上游的一次性浏览器登录与 session cookie 鉴权。
 
 `apps/desktop-runtime` 是仅用作桌面部署根目录的私有 dependency-only pnpm workspace。它的 manifest 提供 CLI 以及每个已发布 agent preset 所需的 workspace 依赖；平台 manifest 选择 macOS arm64 与 x64 的原生变体。运行时闭包验证会拒绝该根目录无法提供的 workspace 运行时依赖或必需对等依赖（peer dependency）。
 
 `prepare-runtime.mjs` 使用 pnpm 当前的 `deploy --prod --frozen-lockfile`，启用 `inject-workspace-packages`，把隔离的生产依赖树暂存到忽略提交的 `apps/desktop/runtime/` 目录。暂存检查只允许每个链接都解析到该目录内的 pnpm 内部 symlink；断裂或越出目录的链接会使构建失败。Electron Builder 把验证后的依赖树复制到 ASAR 外的 `Contents/Resources/dsh-runtime`，使原生可执行文件与 addon 保持可执行，并让 pnpm 依赖布局继续可解析。
 
-此桌面发行版是 [GUI 分层决策](2026-07-19-gui-layering-and-rpc-protocol.zh.md)中 IPC 方向的明确例外。它复用现有 Web 载体，因此同一套启动图、动态客户端 bundle、通用 Typert route、一元 API 验证、WebSocket 流、主题和 React 组件能够原样运行。现有客户端传输钩子仍允许未来实现 IPC 载体，但已发布的桌面应用不包含该实现。
+此桌面发行版是 [Web 启动与传输分层决策](2026-07-24-web-config-tree-boot-and-transport-layering.zh.md)中 IPC 方向的明确例外。它复用现有 Web 载体，因此同一套启动图、动态客户端 bundle、通用 Typert route、一元 API 验证、WebSocket 流、主题和 React 组件能够原样运行。现有客户端传输钩子仍允许未来实现 IPC 载体，但已发布的桌面应用不包含该实现。
 
 窗口禁用 Node 集成和 WebView 附加，启用 context isolation、Chromium sandbox 与 Web 安全，并把顶层导航限制在自己持有的准确 origin。应用拒绝新窗口；只有 HTTP 和 HTTPS 目标可以交给系统浏览器。renderer 权限默认拒绝，唯一例外是该 origin 主 frame 的已清理剪贴板写入。桌面响应策略保留 inline script 与 style 执行，因为当前 HTML 启动注入和客户端 bundle CSS 需要它们。Host／Origin 检查仍是在桌面 capability 校验之下独立工作的 DNS rebinding 与跨站栅栏。
 
@@ -36,9 +36,11 @@ GitHub updater provider 会解析仓库范围的最新 Release，不会按 `desk
 
 单元测试固定了分片就绪解析、近似 URL 拒绝、启动超时与提前退出诊断、有界子进程关闭、父进程丢失处理、启动环境清理、桌面 capability 验证与路由拒绝、准确 origin 导航和外部 scheme 过滤。workspace 约束测试固定了私有桌面应用位于 npm 发布之外，同时保留官方运行时依赖限制。运行时检查固定已声明的 preset／平台闭包，并拒绝暂存依赖树中的断裂或越界 symlink。本地未签名检查覆盖暂存闭包、应用组装、经过鉴权的打包后端启动与 ZIP 产物。本机沙箱无法为 `hdiutil` 提供创建 DMG 所需的设备访问权限，因此本地证据不声称完成了 DMG 组装；tag 工作流持有 DMG 创建、Developer ID、Gatekeeper、stapling、架构、updater 配置与更新清单检查。
 
+`0.1.2-rc.1` 升级使用未签名 arm64 应用验证新的 Gateway 端点与需要鉴权的 HTML 入口。本地沙箱中，即使对空临时目录单独创建原生 watcher 也会报 `EMFILE`；这些启动与 profile 重载检查使用 `CHOKIDAR_USEPOLLING=true`。该设置仅用于测试，不改变已发布应用的默认 watcher，也不能证明沙箱外的原生 watcher 行为。
+
 ## 考虑过的替代方案
 
-**通过 `file://` 加载 Web 分发，并经 IPC 承载 API 流量。** 当桌面专属能力足以证明该传输值得实现时，这仍是目标。当前 Host 侧仍把模块发现与 Web route、通用 Typert 注册与 HTTP 适配器，以及两条事件流与 WebSocket 下行绑定在一起。此时交付 IPC 会在安装包行为具备独立价值前复制或拆分所有这些机制。
+**通过 `file://` 加载 Web 分发，并经 IPC 承载 API 流量。** 当桌面专属能力足以证明该传输值得实现时，这仍是目标。当前 Host 侧仍把模块发现与 Web route、通用 Typert 注册与 HTTP 适配器，以及 Gateway 事件多路复用与其 WebSocket 绑定在一起。此时交付 IPC 会在安装包行为具备独立价值前复制或拆分所有这些机制。
 
 **每次启动时选择随机 loopback 端口。** 这能避免冲突，却会改变浏览器 origin，使 localStorage 支持的草稿与展示状态在多次启动间丢失。稳定客户端应当选择清晰的冲突错误，而不是静默丢失状态。
 

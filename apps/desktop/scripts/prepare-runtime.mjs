@@ -152,12 +152,13 @@ const runtimeRequire = createRequire(join(runtimeDirectory, 'package.json'))
 const cliManifest = runtimeRequire.resolve('@deepseek-ai/dsh/package.json')
 const cliDirectory = dirname(cliManifest)
 const cliEntry = join(cliDirectory, 'lib', 'bin.js')
-const cliConfig = join(cliDirectory, 'config')
+const presetsManifest = runtimeRequire.resolve('@deepseek-ai/dsh-agent-presets/package.json')
+const standardPreset = join(dirname(presetsManifest), 'presets', 'standard', 'agent.cordis.yml')
 const cosmokitManifest = runtimeRequire.resolve('@deepseek-ai/cosmokit/package.json')
 const webAppManifest = runtimeRequire.resolve('@deepseek-ai/dsh-web-app/package.json')
 const webAppRequire = createRequire(webAppManifest)
 const webIndex = webAppRequire.resolve('@deepseek-ai/dsh-web-frontend/dist/index.html')
-for (const path of [cliManifest, cosmokitManifest, webAppManifest, webIndex]) {
+for (const path of [cliManifest, presetsManifest, standardPreset, cosmokitManifest, webAppManifest, webIndex]) {
   if (!isInsideRuntime(await realpath(path))) {
     throw new Error(`desktop runtime: dependency resolved outside staging directory: ${path}`)
   }
@@ -166,7 +167,7 @@ for (const path of [cliManifest, cosmokitManifest, webAppManifest, webIndex]) {
 await Promise.all([
   access(join(runtimeDirectory, 'package.json')),
   access(cliEntry),
-  access(cliConfig),
+  access(standardPreset),
   access(webIndex),
 ])
 

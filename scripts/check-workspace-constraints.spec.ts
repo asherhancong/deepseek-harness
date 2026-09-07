@@ -4,7 +4,8 @@ import { describe, expect, it } from 'vitest'
 import {
   checkExperimentalDependencyIsolation,
   checkExperimentalManifest,
-  checkWorkspace,
+  checkWorkspaceManifest,
+  expectedDshPackageFiles,
   type WorkspaceManifest,
 } from './check-workspace-constraints.ts'
 
@@ -20,8 +21,8 @@ describe('experimental workspace constraints', () => {
       manifest: { name: '@deepseek-ai/dsh-desktop', private: true },
     }
 
-    expect(checkWorkspace(desktop)).toEqual([])
-    expect(checkWorkspace({
+    expect(checkWorkspaceManifest(desktop)).toEqual([])
+    expect(checkWorkspaceManifest({
       ...desktop,
       manifest: { ...desktop.manifest, private: false },
     })).toEqual([
@@ -103,6 +104,19 @@ describe('experimental workspace constraints', () => {
       },
     }])).toEqual([
       `${name}: dependencies.@deepseek-ai/dsh-experimental-prototype must not reference an experimental package`,
+    ])
+  })
+})
+
+describe('package payload constraints', () => {
+  it('includes a declared profile patch without a package-name allowlist', () => {
+    expect(expectedDshPackageFiles({
+      name: '@deepseek-ai/dsh-private-profile',
+      dsh: { bundle: { patch: './cordis.patch.yml' } },
+    })).toEqual([
+      'lib/index.js',
+      'cordis.patch.yml',
+      'lib/types/**/*.d.ts',
     ])
   })
 })
