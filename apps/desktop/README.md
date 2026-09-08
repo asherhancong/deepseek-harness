@@ -42,6 +42,8 @@ Desktop versions are independent of the npm `dsh-v*` release family. A `desktop-
 
 The protected `desktop-release` environment needs `MAC_CSC_LINK`, `MAC_CSC_KEY_PASSWORD`, `APPLE_API_KEY_P8`, `APPLE_API_KEY_ID`, and `APPLE_API_ISSUER`. Store the Developer ID Application `.p12` and App Store Connect `.p8` as base64 in the two file-content secrets. The workflow leaves the Release as a draft; automatic update clients see it only after a maintainer publishes it.
 
+The workspace patches `@electron/osx-sign@1.3.3` to scan physical files serially without following pnpm symlinks. Keep that patch when installing release dependencies; the [desktop distribution decision](../../.agents/notes/implemented/architecture/2026-08-27-macos-electron-desktop-distribution.md) records its scope and removal condition.
+
 ## Security
 
 The renderer has no Node integration, uses context isolation and Chromium sandboxing, and may navigate only within the owned loopback origin. New windows are denied; HTTP and HTTPS links open in the system browser. Permission requests fail closed except the main frame's sanitized clipboard write used by the Web UI copy action. The desktop-only response policy keeps the inline script and style allowances required by the existing module boot and dynamic CSS pipeline. The per-launch capability is owned by the Electron session and Host bootstrap; it is absent from renderer JavaScript, process arguments, environment variables, and disk, and the launch pipe is closed before Host subprocesses can inherit it. The capability check supplements the existing Host/Origin browser-trust fence, so another local process cannot use loopback reachability alone as authorization.

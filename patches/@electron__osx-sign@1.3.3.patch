@@ -1,0 +1,98 @@
+diff --git a/dist/cjs/util.js b/dist/cjs/util.js
+index 1acaf6b554..0ed3bbfaf2 100644
+--- a/dist/cjs/util.js
++++ b/dist/cjs/util.js
+@@ -151,30 +151,36 @@ async function walkAsync(dirPath) {
+     (0, exports.debugLog)('Walking... ' + dirPath);
+     async function _walkAsync(dirPath) {
+         const children = await fs.readdir(dirPath);
+-        return await Promise.all(children.map(async (child) => {
++        const paths = [];
++        // Bound binary probes and never traverse symlinks in bundled dependency trees.
++        for (const child of children) {
+             const filePath = path.resolve(dirPath, child);
+-            const stat = await fs.stat(filePath);
++            const stat = await fs.lstat(filePath);
++            if (stat.isSymbolicLink()) {
++                continue;
++            }
+             if (stat.isFile()) {
+                 switch (path.extname(filePath)) {
+                     case '.cstemp': // Temporary file generated from past codesign
+                         (0, exports.debugLog)('Removing... ' + filePath);
+                         await fs.remove(filePath);
+-                        return null;
++                        break;
+                     default:
+-                        return await getFilePathIfBinary(filePath);
++                        paths.push(await getFilePathIfBinary(filePath));
++                        break;
+                 }
+             }
+-            else if (stat.isDirectory() && !stat.isSymbolicLink()) {
++            else if (stat.isDirectory()) {
+                 const walkResult = await _walkAsync(filePath);
+                 switch (path.extname(filePath)) {
+                     case '.app': // Application
+                     case '.framework': // Framework
+                         walkResult.push(filePath);
+                 }
+-                return walkResult;
++                paths.push(walkResult);
+             }
+-            return null;
+-        }));
++        }
++        return paths;
+     }
+     const allPaths = await _walkAsync(dirPath);
+     return compactFlattenedList(allPaths);
+diff --git a/dist/esm/util.js b/dist/esm/util.js
+index d00ec104fe..8cc8b81543 100644
+--- a/dist/esm/util.js
++++ b/dist/esm/util.js
+@@ -115,30 +115,36 @@ export async function walkAsync(dirPath) {
+     debugLog('Walking... ' + dirPath);
+     async function _walkAsync(dirPath) {
+         const children = await fs.readdir(dirPath);
+-        return await Promise.all(children.map(async (child) => {
++        const paths = [];
++        // Bound binary probes and never traverse symlinks in bundled dependency trees.
++        for (const child of children) {
+             const filePath = path.resolve(dirPath, child);
+-            const stat = await fs.stat(filePath);
++            const stat = await fs.lstat(filePath);
++            if (stat.isSymbolicLink()) {
++                continue;
++            }
+             if (stat.isFile()) {
+                 switch (path.extname(filePath)) {
+                     case '.cstemp': // Temporary file generated from past codesign
+                         debugLog('Removing... ' + filePath);
+                         await fs.remove(filePath);
+-                        return null;
++                        break;
+                     default:
+-                        return await getFilePathIfBinary(filePath);
++                        paths.push(await getFilePathIfBinary(filePath));
++                        break;
+                 }
+             }
+-            else if (stat.isDirectory() && !stat.isSymbolicLink()) {
++            else if (stat.isDirectory()) {
+                 const walkResult = await _walkAsync(filePath);
+                 switch (path.extname(filePath)) {
+                     case '.app': // Application
+                     case '.framework': // Framework
+                         walkResult.push(filePath);
+                 }
+-                return walkResult;
++                paths.push(walkResult);
+             }
+-            return null;
+-        }));
++        }
++        return paths;
+     }
+     const allPaths = await _walkAsync(dirPath);
+     return compactFlattenedList(allPaths);

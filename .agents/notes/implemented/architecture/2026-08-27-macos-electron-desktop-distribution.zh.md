@@ -22,6 +22,8 @@ Loopback 可达性不是桌面授权边界。主进程每次启动都会生成�
 
 `prepare-runtime.mjs` 使用 pnpm 当前的 `deploy --prod --frozen-lockfile`，启用 `inject-workspace-packages`，把隔离的生产依赖树暂存到忽略提交的 `apps/desktop/runtime/` 目录。暂存检查只允许每个链接都解析到该目录内的 pnpm 内部 symlink；断裂或越出目录的链接会使构建失败。Electron Builder 把验证后的依赖树复制到 ASAR 外的 `Contents/Resources/dsh-runtime`，使原生可执行文件与 addon 保持可执行，并让 pnpm 依赖布局继续可解析。
 
+workspace 为 Electron Builder 所用的 `@electron/osx-sign@1.3.3` 文件扫描逻辑应用补丁，覆盖该包分发的两种 JavaScript 格式。扫描逻辑使用 `lstat` 并串行遍历，跳过 symlink，同时继续发现实际二进制文件以及嵌套的 `.app` 和 `.framework` 目录。这避免了重复遍历 pnpm 链接，以及无限并发打开文件导致的 `EMFILE`。暂存过程仍验证链接；签名仍覆盖链接指向的实际目标。只有兼容的签名依赖同时提供这两项行为并通过桌面扫描回归测试后，才能移除补丁。
+
 此桌面发行版是 [Web 启动与传输分层决策](2026-07-24-web-config-tree-boot-and-transport-layering.zh.md)中 IPC 方向的明确例外。它复用现有 Web 载体，因此同一套启动图、动态客户端 bundle、通用 Typert route、一元 API 验证、WebSocket 流、主题和 React 组件能够原样运行。现有客户端传输钩子仍允许未来实现 IPC 载体，但已发布的桌面应用不包含该实现。
 
 窗口禁用 Node 集成和 WebView 附加，启用 context isolation、Chromium sandbox 与 Web 安全，并把顶层导航限制在自己持有的准确 origin。应用拒绝新窗口；只有 HTTP 和 HTTPS 目标可以交给系统浏览器。renderer 权限默认拒绝，唯一例外是该 origin 主 frame 的已清理剪贴板写入。桌面响应策略保留 inline script 与 style 执行，因为当前 HTML 启动注入和客户端 bundle CSS 需要它们。Host／Origin 检查仍是在桌面 capability 校验之下独立工作的 DNS rebinding 与跨站栅栏。
@@ -33,6 +35,8 @@ Electron Builder 为 arm64 和 x64 分别生成 DMG 与 ZIP 目标。DMG 是安�
 GitHub updater provider 会解析仓库范围的最新 Release，不会按 `desktop-v*` 过滤。在 fork `asherhancong/deepseek-harness` 仍作为更新仓库期间，其 Releases 因而专用于桌面发布序列。若要在该仓库发布其他序列，必须先把桌面更新迁移到专用仓库。
 
 ## 验证
+
+桌面签名回归测试通过 Electron Builder 解析并执行已安装的文件扫描逻辑。测试覆盖实际二进制文件发现、嵌套 bundle 顺序、symlink 排除、遗留 `.cstemp` 清理、文件系统错误，以及包含 1,024 个文件时元数据与二进制检测始终各自最多执行一个操作。这些检查不需要签名凭据，在发布工作流准备凭据之前运行。
 
 单元测试固定了分片就绪解析、近似 URL 拒绝、启动超时与提前退出诊断、有界子进程关闭、父进程丢失处理、启动环境清理、桌面 capability 验证与路由拒绝、准确 origin 导航和外部 scheme 过滤。workspace 约束测试固定了私有桌面应用位于 npm 发布之外，同时保留官方运行时依赖限制。运行时检查固定已声明的 preset／平台闭包，并拒绝暂存依赖树中的断裂或越界 symlink。本地未签名检查覆盖暂存闭包、应用组装、经过鉴权的打包后端启动与 ZIP 产物。本机沙箱无法为 `hdiutil` 提供创建 DMG 所需的设备访问权限，因此本地证据不声称完成了 DMG 组装；tag 工作流持有 DMG 创建、Developer ID、Gatekeeper、stapling、架构、updater 配置与更新清单检查。
 
@@ -47,6 +51,8 @@ GitHub updater provider 会解析仓库范围的最新 Release，不会按 `desk
 **在 Electron 主进程内运行 Host 组合。** 进程内启动可以移除一个子进程，却会把 Host 崩溃、全局信号处理和长时间资源清理与窗口进程耦合。子进程为桌面持有方提供有界生命周期，同时保留已安装 CLI 的真实组装路径。
 
 **发布一个 universal 应用。** 运行时闭包包含原生可执行文件和 addon。分别输出 arm64 与 x64 能让首个发行版保持可审计，并避免合并不兼容的原生 slice；完整闭包具备架构覆盖后，可以改用 universal 目标。
+
+**提高打开文件数限制，或将运行时排除在签名之外。** 提高限制不会消除重复遍历 symlink 的问题，而排除运行时会遗漏原生签名目标。扫描补丁让完整的实际运行时保持在签名范围内。直接覆盖为 `@electron/osx-sign` 2.x 与 Electron Builder 26 使用的 CommonJS `signAsync` API 不兼容。
 
 **把桌面包纳入 npm 应用发布序列。** npm 发布不能分发签名 `.app`、DMG、公证 ticket 或 updater 元数据。独立桌面 tag 避免安装包发布被迫与 CLI 和 Web 包共享版本。
 

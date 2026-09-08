@@ -42,6 +42,8 @@ pnpm run dist:desktop
 
 受保护的 `desktop-release` environment 需要 `MAC_CSC_LINK`、`MAC_CSC_KEY_PASSWORD`、`APPLE_API_KEY_P8`、`APPLE_API_KEY_ID` 和 `APPLE_API_ISSUER`。两个文件内容 secret 分别保存经 base64 编码的 Developer ID Application `.p12` 与 App Store Connect `.p8`。工作流会把 Release 保留为草稿；维护者发布后，自动更新客户端才能看到它。
 
+workspace 为 `@electron/osx-sign@1.3.3` 应用补丁，使其串行扫描实际文件，不沿 pnpm symlink 访问目标。安装发布依赖时须保留该补丁；[桌面分发决策](../../.agents/notes/implemented/architecture/2026-08-27-macos-electron-desktop-distribution.zh.md)记录了补丁范围与移除条件。
+
 ## 安全性
 
 renderer 不启用 Node 集成，使用 context isolation 和 Chromium sandbox，并且只能在自己持有的 loopback origin 内导航。应用拒绝新窗口；HTTP 与 HTTPS 链接交给系统浏览器打开。除主 frame 写入 Web UI 复制操作所需的已清理剪贴板外，权限请求默认拒绝。桌面专用响应策略保留现有模块启动和动态 CSS 流水线所需的 inline script 与 style 权限。每次启动的 capability 由 Electron session 与 Host bootstrap 持有；它不会出现在 renderer JavaScript、进程参数、环境变量或磁盘中，并且启动管道会在 Host 子进程能够继承前关闭。capability 校验叠加在既有 Host／Origin 浏览器信任栅栏之上，因此其他本机进程不能只凭 loopback 可达性获得授权。
