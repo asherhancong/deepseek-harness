@@ -44,6 +44,14 @@ pnpm run dist:desktop
 
 workspace 为 `@electron/osx-sign@1.3.3` 应用补丁，使其串行扫描实际文件，不沿 pnpm symlink 访问目标。安装发布依赖时须保留该补丁；[桌面分发决策](../../.agents/notes/implemented/architecture/2026-08-27-macos-electron-desktop-distribution.zh.md)记录了补丁范围与移除条件。
 
+### 恢复公证
+
+工作流把已签名 ZIP 和每个架构独立的 Apple 提交回执保存为 Actions 产物，保留 30 天。每次运行对每个架构最多等待 5 分钟。摘要为“Waiting for Apple”的成功运行只保留这些恢复资料，不创建 Release；必须两个架构都获接受后才会完成打包。
+
+要继续处理，请在同一个 `desktop-v*` tag 上手动启动一次新的桌面工作流，并在 `resume_run_id` 中填写原始构建的 Actions run ID。只有新构建才留空该输入。恢复过程先核对原始仓库、工作流、提交、版本、压缩包哈希和回执 ID，再联系 Apple。它恢复原始应用，不重新构建、签名或提交，随后附加已接受的公证票据，并重新生成 DMG、更新 ZIP、blockmap 和校验和。
+
+不要使用 GitHub 的“Re-run jobs”操作：工作流拒绝重复运行同一任务，以防重复提交。产物缺失或过期、tag 已移动，以及提交中断后未保存回执，都会使恢复停止。维护者必须先调查这些情况，再决定是否重新提交。恢复需要手动启动；工作流不会安排后台轮询。
+
 ## 安全性
 
 renderer 不启用 Node 集成，使用 context isolation 和 Chromium sandbox，并且只能在自己持有的 loopback origin 内导航。应用拒绝新窗口；HTTP 与 HTTPS 链接交给系统浏览器打开。除主 frame 写入 Web UI 复制操作所需的已清理剪贴板外，权限请求默认拒绝。桌面专用响应策略保留现有模块启动和动态 CSS 流水线所需的 inline script 与 style 权限。每次启动的 capability 由 Electron session 与 Host bootstrap 持有；它不会出现在 renderer JavaScript、进程参数、环境变量或磁盘中，并且启动管道会在 Host 子进程能够继承前关闭。capability 校验叠加在既有 Host／Origin 浏览器信任栅栏之上，因此其他本机进程不能只凭 loopback 可达性获得授权。

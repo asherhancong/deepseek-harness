@@ -7,9 +7,16 @@ on:
     tags:
       - 'desktop-v*'
   workflow_dispatch:
+    inputs:
+      resume_run_id:
+        description: 'Original completed run containing signed checkpoints and Apple receipts (blank builds anew)'
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: write
+  actions: read
 
 concurrency:
   group: desktop-release-${{ github.ref }}
@@ -19,10 +26,11 @@ env:
   PRIMARY_NODE_VERSION: '24'
   DSH_TELEMETRY_DISABLED: '1'
   DESKTOP_RELEASE_REPOSITORY: 'asherhancong/deepseek-harness'
+  RESUME_RUN_ID: ${{ inputs.resume_run_id || '' }}
 
 jobs:
   release:
-    name: Build signed DMGs
+    name: Prepare or resume signed DMG draft
     runs-on: macos-15
     environment: desktop-release
     timeout-minutes: 120
@@ -75,12 +83,21 @@ jobs:
             echo "::error::Tag ${GITHUB_REF_NAME} does not match apps/desktop/package.json version ${package_version}; expected ${expected_tag}."
             exit 1
           fi
+          if [[ "$GITHUB_RUN_ATTEMPT" != '1' ]]; then
+            echo '::error::Do not rerun a release attempt. Start a new dispatch with resume_run_id pointing to the original run.'
+            exit 1
+          fi
+          if [[ -n "$RESUME_RUN_ID" && ! "$RESUME_RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo '::error::resume_run_id must be a positive numeric Actions run ID.'
+            exit 1
+          fi
           echo "DESKTOP_VERSION=$package_version" >> "$GITHUB_ENV"
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
       - name: Build official runtime and desktop entry
+        if: env.RESUME_RUN_ID == ''
         shell: bash
         run: |
           set -euo pipefail
@@ -91,50 +108,164 @@ jobs:
       - name: Test desktop authorization and lifecycle boundaries
         run: pnpm exec vitest run apps/desktop/tests packages/client/connection/tests
 
-      - name: Prepare signing and notarization credentials
+      - name: Validate resume source provenance
+        if: env.RESUME_RUN_ID != ''
         shell: bash
         env:
-          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
-          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_JSON: ${{ runner.temp }}/desktop-source-run.json
         run: |
           set -euo pipefail
-          missing=0
-          for variable_name in CSC_LINK CSC_KEY_PASSWORD APPLE_API_KEY_P8 APPLE_API_KEY_ID APPLE_API_ISSUER; do
-            if [[ -z "${!variable_name:-}" ]]; then
-              echo "::error::Required desktop-release secret ${variable_name} is not configured."
-              missing=1
-            fi
-          done
-          if [[ "$missing" -ne 0 ]]; then
-            exit 1
-          fi
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RESUME_RUN_ID" > "$SOURCE_RUN_JSON"
+          node apps/desktop/scripts/notarization.mjs validate-source
 
-          api_key_path="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
-          printf '%s' "$APPLE_API_KEY_P8" | base64 --decode > "$api_key_path"
-          chmod 600 "$api_key_path"
-          if ! grep -q '^-----BEGIN PRIVATE KEY-----$' "$api_key_path"; then
-            echo '::error::APPLE_API_KEY_P8 did not decode to an App Store Connect private key.'
-            exit 1
-          fi
-          echo "APPLE_API_KEY=$api_key_path" >> "$GITHUB_ENV"
+      - name: Restore signed checkpoint
+        if: env.RESUME_RUN_ID != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: desktop-signed-checkpoint
+          path: apps/desktop/notarization
+          run-id: ${{ env.RESUME_RUN_ID }}
+          github-token: ${{ github.token }}
 
-      - name: Package, sign, and notarize macOS artifacts
+      - name: Restore arm64 submission receipt
+        if: env.RESUME_RUN_ID != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: desktop-notary-arm64
+          path: apps/desktop/notarization
+          run-id: ${{ env.RESUME_RUN_ID }}
+          github-token: ${{ github.token }}
+
+      - name: Restore x64 submission receipt
+        if: env.RESUME_RUN_ID != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: desktop-notary-x64
+          path: apps/desktop/notarization
+          run-id: ${{ env.RESUME_RUN_ID }}
+          github-token: ${{ github.token }}
+
+      - name: Verify retained archive identity and hashes
+        if: env.RESUME_RUN_ID != ''
+        run: node apps/desktop/scripts/notarization.mjs verify
+
+      - name: Build signed updater archives without submitting to Apple
+        if: env.RESUME_RUN_ID == ''
         shell: bash
         env:
           DSH_DESKTOP_RELEASE: '1'
           CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$CSC_LINK" || -z "$CSC_KEY_PASSWORD" ]]; then
+            echo '::error::Both macOS signing Secrets are required.'
+            exit 1
+          fi
+          pnpm --dir apps/desktop run stage-runtime
+          pnpm --dir apps/desktop exec electron-builder --config electron-builder.checkpoint.cjs --mac zip --arm64 --x64 --config.directories.output=signed --publish never
+          node apps/desktop/scripts/notarization.mjs checkpoint
+
+      - name: Retain signed archives before Apple submission
+        id: checkpoint
+        if: env.RESUME_RUN_ID == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-signed-checkpoint
+          path: |
+            apps/desktop/notarization/checkpoint.json
+            apps/desktop/notarization/*.zip
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+      - name: Prepare notarization credentials
+        shell: bash
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: |
           set -euo pipefail
-          pnpm --dir apps/desktop run stage-runtime
-          pnpm --dir apps/desktop exec electron-builder --config electron-builder.config.cjs --mac --publish never
+          for variable_name in APPLE_API_KEY_P8 APPLE_API_KEY_ID APPLE_API_ISSUER; do
+            if [[ -z "${!variable_name:-}" ]]; then
+              echo "::error::Required desktop-release secret ${variable_name} is not configured."
+              exit 1
+            fi
+          done
+          api_key_path="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+          printf '%s' "$APPLE_API_KEY_P8" | base64 --decode > "$api_key_path"
+          chmod 600 "$api_key_path"
+          echo "APPLE_API_KEY=$api_key_path" >> "$GITHUB_ENV"
+          if ! grep -q '^-----BEGIN PRIVATE KEY-----$' "$api_key_path"; then
+            echo '::error::APPLE_API_KEY_P8 did not decode to an App Store Connect private key.'
+            exit 1
+          fi
+
+      - name: Submit arm64 archive once
+        id: submit_arm64
+        if: env.RESUME_RUN_ID == ''
+        env:
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: node apps/desktop/scripts/notarization.mjs submit arm64
+
+      - name: Retain arm64 submission receipt
+        if: always() && env.RESUME_RUN_ID == '' && steps.submit_arm64.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-notary-arm64
+          path: |
+            apps/desktop/notarization/attempt-arm64.json
+            apps/desktop/notarization/receipt-arm64.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Submit x64 archive once
+        id: submit_x64
+        if: env.RESUME_RUN_ID == ''
+        env:
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: node apps/desktop/scripts/notarization.mjs submit x64
+
+      - name: Retain x64 submission receipt
+        if: always() && env.RESUME_RUN_ID == '' && steps.submit_x64.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-notary-x64
+          path: |
+            apps/desktop/notarization/attempt-x64.json
+            apps/desktop/notarization/receipt-x64.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Query original submissions with a bounded wait
+        id: notary
+        env:
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: node apps/desktop/scripts/notarization.mjs check
+
+      - name: Restore and staple accepted applications
+        if: steps.notary.outputs.accepted == 'true'
+        run: node apps/desktop/scripts/notarization.mjs restore
+
+      - name: Assemble final installers from the notarized applications
+        if: steps.notary.outputs.accepted == 'true'
+        shell: bash
+        env:
+          DSH_DESKTOP_RELEASE: '1'
+        run: |
+          set -euo pipefail
+          desktop_dir="$GITHUB_WORKSPACE/apps/desktop"
+          pnpm --dir apps/desktop exec electron-builder --config electron-builder.config.cjs --prepackaged "$desktop_dir/release/mac-arm64/DSH.app" --mac dmg zip --arm64 --config.directories.output=final-arm64 --publish never
+          pnpm --dir apps/desktop exec electron-builder --config electron-builder.config.cjs --prepackaged "$desktop_dir/release/mac/DSH.app" --mac dmg zip --x64 --config.directories.output=final-x64 --publish never
+          node apps/desktop/scripts/notarization.mjs merge
 
       - name: Verify signed and notarized applications
+        if: steps.notary.outputs.accepted == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -449,9 +580,11 @@ jobs:
           done
 
       - name: Smoke test packaged backend authorization
+        if: steps.notary.outputs.accepted == 'true'
         run: pnpm --dir apps/desktop run verify:packaged-backend
 
       - name: Verify update and installer artifacts
+        if: steps.notary.outputs.accepted == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -818,6 +951,7 @@ jobs:
           NODE
 
       - name: Create or update draft GitHub Release
+        if: steps.notary.outputs.accepted == 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -832,6 +966,11 @@ jobs:
             "$output_dir/latest-mac.yml"
           )
 
+          live_commit=$(git ls-remote origin "refs/tags/$GITHUB_REF_NAME" "refs/tags/$GITHUB_REF_NAME^{}" | awk -v ref="refs/tags/$GITHUB_REF_NAME" '$2 == ref { direct=$1 } $2 == ref "^{}" { peeled=$1 } END { print peeled ? peeled : direct }')
+          if [[ "$live_commit" != "$GITHUB_SHA" ]]; then
+            echo '::error::The release tag moved during this run. Refusing to upload stale artifacts.'
+            exit 1
+          fi
           release_is_draft=$(gh release view "$GITHUB_REF_NAME" --repo "$DESKTOP_RELEASE_REPOSITORY" --json isDraft --jq '.isDraft' 2>/dev/null || true)
           if [[ "$release_is_draft" == 'true' ]]; then
             gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --repo "$DESKTOP_RELEASE_REPOSITORY" --clobber

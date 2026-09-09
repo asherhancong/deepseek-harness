@@ -44,6 +44,14 @@ The protected `desktop-release` environment needs `MAC_CSC_LINK`, `MAC_CSC_KEY_P
 
 The workspace patches `@electron/osx-sign@1.3.3` to scan physical files serially without following pnpm symlinks. Keep that patch when installing release dependencies; the [desktop distribution decision](../../.agents/notes/implemented/architecture/2026-08-27-macos-electron-desktop-distribution.md) records its scope and removal condition.
 
+### Resume notarization
+
+The workflow saves signed ZIPs and separate Apple submission receipts as Actions artifacts for 30 days. It waits at most five minutes per architecture per run. A successful run with a “Waiting for Apple” summary preserves those checkpoints but creates no Release; both architectures must be accepted before finalization.
+
+To continue, start a new manual run of the desktop workflow on the same `desktop-v*` tag and enter the original build's Actions run ID in `resume_run_id`. Leave that input empty only for a new build. Resume checks the original repository, workflow, commit, version, archive hashes, and receipt IDs before contacting Apple. It restores the original applications without rebuilding, re-signing, or resubmitting them, then staples accepted tickets and regenerates DMGs, updater ZIPs, blockmaps, and checksums.
+
+Do not use GitHub's “Re-run jobs” control for this workflow: repeated attempts are rejected to prevent duplicate submissions. Missing or expired artifacts, a moved tag, and an interrupted submission without a saved receipt stop recovery. A maintainer must investigate those cases before choosing a new submission. Recovery is manual; this workflow does not schedule background polling.
+
 ## Security
 
 The renderer has no Node integration, uses context isolation and Chromium sandboxing, and may navigate only within the owned loopback origin. New windows are denied; HTTP and HTTPS links open in the system browser. Permission requests fail closed except the main frame's sanitized clipboard write used by the Web UI copy action. The desktop-only response policy keeps the inline script and style allowances required by the existing module boot and dynamic CSS pipeline. The per-launch capability is owned by the Electron session and Host bootstrap; it is absent from renderer JavaScript, process arguments, environment variables, and disk, and the launch pipe is closed before Host subprocesses can inherit it. The capability check supplements the existing Host/Origin browser-trust fence, so another local process cannot use loopback reachability alone as authorization.

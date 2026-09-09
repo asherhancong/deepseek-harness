@@ -32,6 +32,10 @@ workspace 为 Electron Builder 所用的 `@electron/osx-sign@1.3.3` 文件扫描
 
 Electron Builder 为 arm64 和 x64 分别生成 DMG 与 ZIP 目标。DMG 是安装产物；ZIP、blockmap 和 `latest-mac.yml` 与它一同发布，供 `electron-updater` 使用。受保护的 macOS 工作流要求 Developer ID 签名与 App Store Connect team key 公证，验证应用 bundle 和更新产物，并创建 Release 草稿。发布该草稿是自动更新可见性的边界。
 
+签名与公证分成可持久恢复的阶段。Electron Builder 先生成包含 updater 配置的已签名 ZIP，不隐式执行公证。在提交 Apple 之前，工作流保留两个 ZIP 及绑定哈希的检查点；每次提交意图以排他方式创建，返回的回执分别上传。每个架构每次等待 Apple 的时间限制为 5 分钟。新启动的手动运行只有在仓库、工作流、提交、tag、版本、哈希与提交身份全部匹配时，才能恢复原始运行的产物。回执缺失时会停止，不会自动重新提交。
+
+两个提交均获接受后，工作流解压这些原始应用、验证签名、附加并验证公证票据，再使用不重新签名的 prepackaged 目标重新生成安装包与更新压缩包。各架构输出在合并更新清单前保持隔离，保留每个 blockmap 字段和 x64 旧式查找信息。公证仍在等待时只生成恢复摘要，不生成 Release 草稿。
+
 GitHub updater provider 会解析仓库范围的最新 Release，不会按 `desktop-v*` 过滤。在 fork `asherhancong/deepseek-harness` 仍作为更新仓库期间，其 Releases 因而专用于桌面发布序列。若要在该仓库发布其他序列，必须先把桌面更新迁移到专用仓库。
 
 Loader 只在调用 `evaluate()` 时创建并缓存表达式求值器，而不在模块加载时创建。这让 Web 入口可以在桌面策略下初始化，无需添加 `unsafe-eval`。Host 侧 YAML 表达式保留上下文查找、返回值和错误传播；显式编译 JavaScript 字符串的 renderer 功能仍受 CSP 约束。
@@ -41,6 +45,8 @@ Loader 只在调用 `evaluate()` 时创建并缓存表达式求值器，而不�
 桌面 Loader 回归测试在隔离的 JavaScript realm 中执行真实源码。测试检查禁用字符串代码生成时的初始化与字面量插值、该限制下实际表达式求值被拒绝，以及不受此限制的类 Host realm 中的表达式行为。
 
 桌面签名回归测试通过 Electron Builder 解析并执行已安装的文件扫描逻辑。测试覆盖实际二进制文件发现、嵌套 bundle 顺序、symlink 排除、遗留 `.cstemp` 清理、文件系统错误，以及包含 1,024 个文件时元数据与二进制检测始终各自最多执行一个操作。这些检查不需要签名凭据，在发布工作流准备凭据之前运行。
+
+发布状态回归测试拒绝来源不符的运行、变化的压缩包、缺失或不匹配的回执、不确定的重复提交、未知 Apple 状态和无效更新清单。基于真实文件系统的测试模拟一次等待运行，以及随后同一组回执 ID 获接受的响应。工作流测试要求提交前保留检查点，并在生成每项最终产物及草稿前要求两个架构均获接受；负向对照确认移除接受条件会使测试失败。真实 Apple 接受与最终 DMG 验证仍由 macOS CI 持有。
 
 单元测试固定了分片就绪解析、近似 URL 拒绝、启动超时与提前退出诊断、有界子进程关闭、父进程丢失处理、启动环境清理、桌面 capability 验证与路由拒绝、准确 origin 导航和外部 scheme 过滤。workspace 约束测试固定了私有桌面应用位于 npm 发布之外，同时保留官方运行时依赖限制。运行时检查固定已声明的 preset／平台闭包，并拒绝暂存依赖树中的断裂或越界 symlink。本地未签名检查覆盖暂存闭包、应用组装、经过鉴权的打包后端启动与 ZIP 产物。本机沙箱无法为 `hdiutil` 提供创建 DMG 所需的设备访问权限，因此本地证据不声称完成了 DMG 组装；tag 工作流持有 DMG 创建、Developer ID、Gatekeeper、stapling、架构、updater 配置与更新清单检查。
 
@@ -57,6 +63,8 @@ Loader 只在调用 `evaluate()` 时创建并缓存表达式求值器，而不�
 **发布一个 universal 应用。** 运行时闭包包含原生可执行文件和 addon。分别输出 arm64 与 x64 能让首个发行版保持可审计，并避免合并不兼容的原生 slice；完整闭包具备架构覆盖后，可以改用 universal 目标。
 
 **提高打开文件数限制，或将运行时排除在签名之外。** 提高限制不会消除重复遍历 symlink 的问题，而排除运行时会遗漏原生签名目标。扫描补丁让完整的实际运行时保持在签名范围内。直接覆盖为 `@electron/osx-sign` 2.x 与 Electron Builder 26 使用的 CommonJS `signAsync` API 不兼容。
+
+**始终占用一个 runner 等待，或每次超时后重新构建。** Apple 排队时间可能超过 runner 预算，导致临时签名应用丢失并引发重复提交。持久检查点把 Apple 队列与 runner 生命周期分离。恢复要求原始产物仍在 30 天保留期内；若提交确认丢失，则需要人工调查。
 
 **把桌面包纳入 npm 应用发布序列。** npm 发布不能分发签名 `.app`、DMG、公证 ticket 或 updater 元数据。独立桌面 tag 避免安装包发布被迫与 CLI 和 Web 包共享版本。
 
