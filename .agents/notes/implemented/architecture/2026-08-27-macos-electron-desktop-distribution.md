@@ -34,7 +34,11 @@ Electron Builder produces architecture-specific DMG and ZIP targets for arm64 an
 
 GitHub's updater provider resolves the repository-wide latest Release and does not filter releases by `desktop-v*`. While the fork `asherhancong/deepseek-harness` is the update repository, its Releases are therefore reserved for the desktop family. Publishing another release family there requires moving desktop updates to a dedicated repository first.
 
+Loader creates and caches its expression evaluator only when `evaluate()` is called, not when the module loads. This lets the Web entry initialize under the desktop policy without adding `unsafe-eval`. Host-side YAML expressions retain context lookup, return values, and error propagation; renderer features that explicitly compile JavaScript strings remain subject to CSP.
+
 ## Verification
+
+The desktop Loader regression executes the real source in isolated JavaScript realms. It checks initialization and literal interpolation with string code generation disabled, rejection of actual expression evaluation under that restriction, and expression behavior in an unrestricted Host-like realm.
 
 Desktop signing regressions exercise the installed walker resolved through Electron Builder. They cover physical binary discovery, nested bundle order, symlink exclusion, stale `.cstemp` cleanup, filesystem errors, and single-operation metadata and binary detection across 1,024 files. These checks require no signing credentials and run in the release workflow before credential preparation.
 

@@ -50,4 +50,6 @@ The renderer has no Node integration, uses context isolation and Chromium sandbo
 
 ## Limitations
 
+The renderer's Content Security Policy excludes `unsafe-eval`. Normal Web startup does not compile Loader expressions; renderer extensions that require JavaScript string evaluation remain unsupported. Host-side YAML `!!js` configuration keeps its expression semantics.
+
 The first macOS distribution uses the Web carrier over a loopback child process, not `file://` plus IPC. The [desktop distribution decision](../../.agents/notes/implemented/architecture/2026-08-27-macos-electron-desktop-distribution.md) records why the initial release preserves the existing plugin-bundle, Typert, and bidirectional event transports. Electron 44 requires macOS 13 or newer. The fixed port means another listener on `43121` prevents startup and must be stopped before DSH Desktop can run.

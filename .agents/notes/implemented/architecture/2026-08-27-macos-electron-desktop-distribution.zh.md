@@ -34,7 +34,11 @@ Electron Builder 为 arm64 和 x64 分别生成 DMG 与 ZIP 目标。DMG 是安�
 
 GitHub updater provider 会解析仓库范围的最新 Release，不会按 `desktop-v*` 过滤。在 fork `asherhancong/deepseek-harness` 仍作为更新仓库期间，其 Releases 因而专用于桌面发布序列。若要在该仓库发布其他序列，必须先把桌面更新迁移到专用仓库。
 
+Loader 只在调用 `evaluate()` 时创建并缓存表达式求值器，而不在模块加载时创建。这让 Web 入口可以在桌面策略下初始化，无需添加 `unsafe-eval`。Host 侧 YAML 表达式保留上下文查找、返回值和错误传播；显式编译 JavaScript 字符串的 renderer 功能仍受 CSP 约束。
+
 ## 验证
+
+桌面 Loader 回归测试在隔离的 JavaScript realm 中执行真实源码。测试检查禁用字符串代码生成时的初始化与字面量插值、该限制下实际表达式求值被拒绝，以及不受此限制的类 Host realm 中的表达式行为。
 
 桌面签名回归测试通过 Electron Builder 解析并执行已安装的文件扫描逻辑。测试覆盖实际二进制文件发现、嵌套 bundle 顺序、symlink 排除、遗留 `.cstemp` 清理、文件系统错误，以及包含 1,024 个文件时元数据与二进制检测始终各自最多执行一个操作。这些检查不需要签名凭据，在发布工作流准备凭据之前运行。
 

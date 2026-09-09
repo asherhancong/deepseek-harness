@@ -50,4 +50,6 @@ renderer 不启用 Node 集成，使用 context isolation 和 Chromium sandbox�
 
 ## 限制
 
+renderer 的 Content Security Policy 不包含 `unsafe-eval`。正常 Web 启动不编译 Loader 表达式；需要将 JavaScript 字符串作为代码执行的 renderer 扩展仍不受支持。Host 侧 YAML `!!js` 配置保留其表达式语义。
+
 首个 macOS 发行版通过 loopback 子进程使用 Web 载体，而不是 `file://` 加 IPC。[桌面分发决策](../../.agents/notes/implemented/architecture/2026-08-27-macos-electron-desktop-distribution.zh.md)记录了初始发行版为何保留现有插件 bundle、Typert 和双向事件传输。Electron 44 要求 macOS 13 或更高版本。固定端口意味着 `43121` 上的其他 listener 会阻止启动，运行 DSH Desktop 前必须先停止该 listener。
