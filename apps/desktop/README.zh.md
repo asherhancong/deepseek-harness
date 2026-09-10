@@ -28,6 +28,18 @@ pnpm run dist:desktop
 
 在 `hdiutil` 可用的普通 macOS 宿主上，该命令会把按架构区分的未签名 DMG 与 ZIP 写入 `apps/desktop/release/`。无法访问 `hdiutil` 设备的受限沙箱不能完成 DMG 目标；其中通过的 `.app` 或 ZIP 检查不代表已经生成 DMG。通过 Gatekeeper 分发和自动更新需要运行签名发布工作流。
 
+### 打包应用启动检查
+
+构建应用 bundle 后，运行匹配本机架构的启动检查：
+
+```sh
+pnpm --dir apps/desktop run verify:packaged-launch /path/to/DSH.app /path/to/new-evidence-directory
+```
+
+该检查启动真实 ASAR 主入口和已安装的 `electron-updater`，不填写 API key 即完成引导，并验证 Web UI、应用正常退出和后端端口释放。它使用临时主目录、日志和浏览器数据，阻止非 loopback 主机名解析，并保留 renderer sandbox 与 Content Security Policy。请先关闭其他 DSH 实例：`43121` 是产品固定端口，检查不会接管已有 listener。可选的证据目录保存截图和诊断文件，不覆盖已有文件。
+
+发布工作流在提交 Apple 前检查已签名应用，并在创建草稿前检查最终更新 ZIP 中解压的应用。运行时覆盖范围是 runner 的原生架构；两个架构仍都会接受签名、公证与压缩包检查。无法初始化 macOS GUI 服务的宿主不能提供启动证据。独立的打包后端检查覆盖鉴权，但不执行 Electron 主入口或 updater 导入。
+
 ## 分发
 
 桌面版本独立于 npm 的 `dsh-v*` 发布序列。版本与本包匹配的 `desktop-vX.Y.Z` tag 会启动 `.github/workflows/desktop-release.yml`；工作流对两个架构的构建执行签名与公证，并创建 GitHub Release 草稿。

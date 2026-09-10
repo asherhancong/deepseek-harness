@@ -167,6 +167,18 @@ jobs:
           pnpm --dir apps/desktop exec electron-builder --config electron-builder.checkpoint.cjs --mac zip --arm64 --x64 --config.directories.output=signed --publish never
           node apps/desktop/scripts/notarization.mjs checkpoint
 
+      - name: Smoke test signed application launch before Apple submission
+        if: env.RESUME_RUN_ID == ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$(uname -m)" in
+            arm64) app_path='apps/desktop/signed/mac-arm64/DSH.app' ;;
+            x86_64) app_path='apps/desktop/signed/mac/DSH.app' ;;
+            *) echo '::error::Unsupported launch-test host architecture.'; exit 1 ;;
+          esac
+          node apps/desktop/scripts/verify-packaged-launch.mjs "$app_path" "$RUNNER_TEMP/desktop-launch/signed"
+
       - name: Retain signed archives before Apple submission
         id: checkpoint
         if: env.RESUME_RUN_ID == ''
@@ -678,6 +690,12 @@ jobs:
               spctl --assess --type execute --verbose=4 "$extracted_app"
               xcrun stapler validate "$extracted_app"
 
+              if [[ "$expected_zip_arch" == "$(uname -m)" ]]; then
+                node apps/desktop/scripts/verify-packaged-launch.mjs "$extracted_app" "$RUNNER_TEMP/desktop-launch/final-zip"
+              else
+                echo "Launch smoke is native-only; ${expected_zip_arch} received static signing and archive checks."
+              fi
+
               trap - EXIT
               cleanup_extract
             )
@@ -985,6 +1003,15 @@ jobs:
               --title "DSH ${DESKTOP_VERSION}" \
               --generate-notes
           fi
+
+      - name: Retain packaged launch evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-launch-evidence
+          path: ${{ runner.temp }}/desktop-launch
+          if-no-files-found: ignore
+          retention-days: 30
 
       - name: Remove notarization key
         if: always()

@@ -40,7 +40,11 @@ GitHub's updater provider resolves the repository-wide latest Release and does n
 
 Loader creates and caches its expression evaluator only when `evaluate()` is called, not when the module loads. This lets the Web entry initialize under the desktop policy without adding `unsafe-eval`. Host-side YAML expressions retain context lookup, return values, and error propagation; renderer features that explicitly compile JavaScript strings remain subject to CSP.
 
+The ESM main entry imports `electron-updater` through its CommonJS default export and then reads `autoUpdater`. The dependency exposes that property through a getter that Node's named-export detection does not recognize. Lifecycle mocks do not establish native module-linking compatibility.
+
 ## Verification
+
+The updater interop regression links the authored import against the real dependency in native Node ESM without invoking Electron-only initialization. The packaged launch check executes the actual ASAR main entry, passes fresh keyless onboarding, observes the rendered Web UI and renderer errors, and requires clean process exit plus backend port release. Child-only temporary home, logs, DSH state, and browser data isolate user files; non-loopback hostname resolution is blocked before startup to prevent update downloads. It does not weaken renderer security or replace the updater. Release CI checks the native signed application before submitting to Apple and the final native ZIP before creating the draft; the other architecture retains static signature and archive verification, not a claim of runtime coverage.
 
 The desktop Loader regression executes the real source in isolated JavaScript realms. It checks initialization and literal interpolation with string code generation disabled, rejection of actual expression evaluation under that restriction, and expression behavior in an unrestricted Host-like realm.
 

@@ -40,7 +40,11 @@ GitHub updater provider 会解析仓库范围的最新 Release，不会按 `desk
 
 Loader 只在调用 `evaluate()` 时创建并缓存表达式求值器，而不在模块加载时创建。这让 Web 入口可以在桌面策略下初始化，无需添加 `unsafe-eval`。Host 侧 YAML 表达式保留上下文查找、返回值和错误传播；显式编译 JavaScript 字符串的 renderer 功能仍受 CSP 约束。
 
+ESM 主入口通过 CommonJS 默认导出导入 `electron-updater`，再读取 `autoUpdater`。该依赖使用 getter 暴露此属性，Node 的具名导出检测无法识别。生命周期 mock 不能证明原生模块链接兼容性。
+
 ## 验证
+
+updater 互操作回归测试在原生 Node ESM 中把源码中的导入连接到真实依赖，不调用仅限 Electron 的初始化。打包启动检查执行真实 ASAR 主入口，完成全新且无需 key 的引导，观察已渲染 Web UI 与 renderer 错误，并要求进程正常退出且后端端口释放。仅对子进程生效的临时主目录、日志、DSH 状态和浏览器数据隔离用户文件；启动前阻止非 loopback 主机名解析，防止下载更新。检查不削弱 renderer 安全，也不替换 updater。发布 CI 在提交 Apple 前检查原生架构的已签名应用，在创建草稿前检查最终原生架构 ZIP；另一架构保留静态签名与压缩包验证，不声称具有运行时覆盖。
 
 桌面 Loader 回归测试在隔离的 JavaScript realm 中执行真实源码。测试检查禁用字符串代码生成时的初始化与字面量插值、该限制下实际表达式求值被拒绝，以及不受此限制的类 Host realm 中的表达式行为。
 

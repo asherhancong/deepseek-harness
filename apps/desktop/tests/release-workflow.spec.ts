@@ -29,6 +29,27 @@ function named(name: string): Step {
 }
 
 describe('resumable desktop release workflow', () => {
+  it('launches the real signed app before Apple submission and the final native ZIP before the draft', () => {
+    const launch = named('Smoke test signed application launch before Apple submission')
+    expect(launch.if).toBe("env.RESUME_RUN_ID == ''")
+    expect(steps.indexOf(launch)).toBeGreaterThan(steps.indexOf(named('Build signed updater archives without submitting to Apple')))
+    expect(steps.indexOf(launch)).toBeLessThan(steps.indexOf(named('Retain signed archives before Apple submission')))
+    expect(steps.indexOf(launch)).toBeLessThan(steps.indexOf(named('Prepare notarization credentials')))
+    expect(launch.run).toContain('apps/desktop/signed/mac-arm64/DSH.app')
+    expect(launch.run).toContain('apps/desktop/signed/mac/DSH.app')
+    expect(launch.run).toContain('node apps/desktop/scripts/verify-packaged-launch.mjs "$app_path"')
+    const artifacts = named('Verify update and installer artifacts')
+    expect(artifacts.run).toContain('"$expected_zip_arch" == "$(uname -m)"')
+    expect(artifacts.run).toContain('node apps/desktop/scripts/verify-packaged-launch.mjs "$extracted_app"')
+    expect(steps.indexOf(artifacts)).toBeLessThan(steps.indexOf(named('Create or update draft GitHub Release')))
+    for (const step of [launch, artifacts]) {
+      expect(step.env?.CSC_LINK).toBeUndefined()
+      expect(step.env?.CSC_KEY_PASSWORD).toBeUndefined()
+      expect(step.run).not.toContain('ELECTRON_RUN_AS_NODE')
+    }
+    expect(named('Retain packaged launch evidence').if).toBe('always()')
+  })
+
   it('retains archives before submitting and each receipt before the next submission', () => {
     const checkpoint = named('Retain signed archives before Apple submission')
     const armSubmit = named('Submit arm64 archive once')

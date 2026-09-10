@@ -2,7 +2,10 @@
 
 import type { App, BrowserWindow } from 'electron'
 import { dialog } from 'electron'
-import { autoUpdater } from 'electron-updater'
+import electronUpdater from 'electron-updater'
+
+// The CommonJS package exposes autoUpdater through a getter, not a native ESM export.
+const { autoUpdater } = electronUpdater
 
 const UPDATE_INTERVAL_MS = 4 * 60 * 60 * 1000
 

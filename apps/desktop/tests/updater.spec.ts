@@ -34,7 +34,7 @@ vi.mock('electron', () => ({
   dialog: { showMessageBox: mocks.showMessageBox },
 }))
 
-vi.mock('electron-updater', () => ({ autoUpdater: mocks.autoUpdater }))
+vi.mock('electron-updater', () => ({ default: { autoUpdater: mocks.autoUpdater } }))
 
 import { startDesktopUpdater, type UpdateLifecycle } from '../src/main/updater.ts'
 

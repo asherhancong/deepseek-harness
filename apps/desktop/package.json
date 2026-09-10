@@ -12,7 +12,8 @@
     "dist": "pnpm run stage-runtime && electron-builder --config electron-builder.config.cjs --mac --publish never",
     "start": "electron .",
     "test": "vitest run --root ../.. apps/desktop/tests",
-    "verify:packaged-backend": "node scripts/verify-packaged-backend.mjs"
+    "verify:packaged-backend": "node scripts/verify-packaged-backend.mjs",
+    "verify:packaged-launch": "node scripts/verify-packaged-launch.mjs"
   },
   "license": "MIT",
   "author": "DeepSeek Harness contributors",
@@ -24,6 +25,7 @@
     "@types/node": "^22.20.0",
     "electron": "44.0.0",
     "electron-builder": "26.15.3",
+    "playwright": "1.61.1",
     "tsdown": "^0.22.2",
     "typescript": "^6.0.3",
     "vitest": "^4.1.8"

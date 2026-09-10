@@ -28,6 +28,18 @@ pnpm run dist:desktop
 
 On an ordinary macOS host with working `hdiutil`, the command writes unsigned architecture-specific DMG and ZIP outputs under `apps/desktop/release/`. A restricted sandbox without `hdiutil` device access cannot complete the DMG target; successful `.app` or ZIP checks there are not evidence that a DMG was created. Gatekeeper distribution and automatic updates require the signed release workflow.
 
+### Packaged launch check
+
+After building an application bundle, run the native-architecture launch check:
+
+```sh
+pnpm --dir apps/desktop run verify:packaged-launch /path/to/DSH.app /path/to/new-evidence-directory
+```
+
+This starts the actual ASAR main entry with the installed `electron-updater`, completes onboarding without an API key, and verifies the Web UI, clean application exit, and backend port release. It uses temporary home, logs, and browser data, blocks non-loopback hostname resolution, and preserves the renderer sandbox and Content Security Policy. Close another DSH instance first: port `43121` is product-fixed, and the check never takes over an existing listener. The optional evidence directory receives a screenshot and diagnostic files without overwriting existing files.
+
+The release workflow runs this check against the signed application before Apple submission and against the final extracted updater ZIP before creating the draft. Runtime coverage follows the runner's native architecture; both architectures still receive signature, notarization, and archive checks. A host that cannot initialize macOS GUI services cannot provide launch evidence. The separate packaged-backend check covers authorization but does not execute the Electron main entry or its updater import.
+
 ## Distribution
 
 Desktop versions are independent of the npm `dsh-v*` release family. A `desktop-vX.Y.Z` tag whose version matches this package starts `.github/workflows/desktop-release.yml`; the workflow signs and notarizes both architecture builds and creates a draft GitHub Release.
