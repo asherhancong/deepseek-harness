@@ -10,6 +10,8 @@ The Electron main process starts the staged standalone `dsh web` runtime on the 
 
 The CLI child inherits the user's home directory as its initial working directory. Workspace selection in the UI remains the authoritative way to choose project directories. A desktop bootstrap reads the capability once from a private anonymous pipe, closes that descriptor, and removes Electron's Node-mode switch before the Host can create subprocesses. Quitting the application sends `SIGTERM` to the child and escalates to `SIGKILL` after the CLI's five-second shutdown budget; a parent watchdog also terminates an orphaned Host after an abnormal Electron exit.
 
+Quitting during startup cancels pending launch work. A backend readiness result arriving after quit does not open a window or start update checks, and intentional shutdown does not show a startup-failure dialog.
+
 ## Development
 
 Build the official Host and Web artifacts before launching Electron:
@@ -39,6 +41,8 @@ pnpm --dir apps/desktop run verify:packaged-launch /path/to/DSH.app /path/to/new
 This starts the actual ASAR main entry with the installed `electron-updater`, completes onboarding without an API key, and verifies the Web UI, clean application exit, and backend port release. It uses temporary home, logs, and browser data, blocks non-loopback hostname resolution, and preserves the renderer sandbox and Content Security Policy. Close another DSH instance first: port `43121` is product-fixed, and the check never takes over an existing listener. The optional evidence directory receives a screenshot and diagnostic files without overwriting existing files.
 
 The release workflow runs this check against the signed application before Apple submission and against the final extracted updater ZIP before creating the draft. Runtime coverage follows the runner's native architecture; both architectures still receive signature, notarization, and archive checks. A host that cannot initialize macOS GUI services cannot provide launch evidence. The separate packaged-backend check covers authorization but does not execute the Electron main entry or its updater import.
+
+Isolation checks compare actual filesystem targets, so macOS path aliases are accepted while missing paths and links escaping the temporary directory are rejected. Diagnostic evidence retains the application paths, child exit result, and isolated backend log tail even when a later check fails.
 
 ## Distribution
 

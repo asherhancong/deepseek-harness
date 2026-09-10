@@ -10,6 +10,8 @@ Electron 主进程在固定 loopback 地址 `http://127.0.0.1:43121` 上启动�
 
 CLI 子进程把用户主目录作为初始工作目录。UI 中的 workspace 选择仍是指定项目目录的权威方式。桌面 bootstrap 会从私有匿名管道中一次性读取 capability、关闭该 descriptor，并在 Host 创建子进程前移除 Electron 的 Node 模式开关。退出应用会向子进程发送 `SIGTERM`，并在 CLI 的 5 秒关闭预算耗尽后升级为 `SIGKILL`；父进程 watchdog 还会在 Electron 异常退出后终止成为孤儿的 Host。
 
+启动期间退出会取消尚未完成的启动工作。退出后才到达的后端就绪结果不会打开窗口或启动更新检查；主动退出也不会显示启动失败对话框。
+
 ## 开发
 
 启动 Electron 前先构建官方 Host 与 Web 产物：
@@ -39,6 +41,8 @@ pnpm --dir apps/desktop run verify:packaged-launch /path/to/DSH.app /path/to/new
 该检查启动真实 ASAR 主入口和已安装的 `electron-updater`，不填写 API key 即完成引导，并验证 Web UI、应用正常退出和后端端口释放。它使用临时主目录、日志和浏览器数据，阻止非 loopback 主机名解析，并保留 renderer sandbox 与 Content Security Policy。请先关闭其他 DSH 实例：`43121` 是产品固定端口，检查不会接管已有 listener。可选的证据目录保存截图和诊断文件，不覆盖已有文件。
 
 发布工作流在提交 Apple 前检查已签名应用，并在创建草稿前检查最终更新 ZIP 中解压的应用。运行时覆盖范围是 runner 的原生架构；两个架构仍都会接受签名、公证与压缩包检查。无法初始化 macOS GUI 服务的宿主不能提供启动证据。独立的打包后端检查覆盖鉴权，但不执行 Electron 主入口或 updater 导入。
+
+隔离检查比较实际文件系统目标，因此接受 macOS 路径别名，但拒绝不存在的路径和越出临时目录的链接。即使后续检查失败，诊断证据仍会保留应用路径、子进程退出结果和隔离后端日志的尾部内容。
 
 ## 分发
 

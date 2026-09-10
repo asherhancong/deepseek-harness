@@ -168,6 +168,7 @@ async function prepareToQuit(): Promise<void> {
 
 /** Start the DSH backend, then expose only its verified loopback origin. */
 async function launch(): Promise<void> {
+  if (quitting) return
   app.setAppLogsPath()
   const logPath = join(app.getPath('logs'), 'desktop-backend.log')
   const capability = createDesktopCapability()
@@ -187,6 +188,8 @@ async function launch(): Promise<void> {
     app.quit()
   })
   const url = await backend.start()
+  // oxlint-disable-next-line typescript/no-unnecessary-condition -- before-quit can change this state while backend readiness is pending.
+  if (quitting) return
   secureDesktopSession(capability)
   mainWindow = createWindow(url)
   updater = startDesktopUpdater(app, mainWindow, { prepareToQuit })
@@ -215,6 +218,7 @@ if (!hasLock) {
     void prepareToQuit().finally(() => { app.quit() })
   })
   app.whenReady().then(launch).catch((error: unknown) => {
+    if (quitting) return
     const message = error instanceof Error ? error.message : String(error)
     dialog.showErrorBox('DSH Could Not Start', message)
     app.quit()

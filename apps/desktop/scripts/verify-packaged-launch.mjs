@@ -1,5 +1,5 @@
 /** Launch the real packaged Electron entry, pass keyless onboarding, and await complete shutdown. */
-import { access, mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -64,8 +64,15 @@ async function awaitOwnedGroupExit(child) {
   throw new Error('Owned Electron process group still has live members after shutdown')
 }
 
-function inside(root, candidate) {
-  const suffix = relative(root, candidate)
+/**
+ * Compare existing filesystem targets, accepting aliases but rejecting links outside the owned directory.
+ * @param root - owned directory, including any platform path alias.
+ * @param candidate - existing application path reported by Electron.
+ * @returns whether both names resolve to the same directory or its descendant.
+ */
+export async function containsRealPath(root, candidate) {
+  const [rootPath, candidatePath] = await Promise.all([realpath(root), realpath(candidate)])
+  const suffix = relative(rootPath, candidatePath)
   return suffix === '' || (!isAbsolute(suffix) && suffix !== '..' && !suffix.startsWith('..' + sep))
 }
 
@@ -149,6 +156,7 @@ export async function verifyPackagedLaunch(applicationInput, evidenceInput) {
   let exited
   let page
   let report
+  let backendLogPath
   let log = ''
   let stopping = false
   let portReleased = false
@@ -208,12 +216,14 @@ export async function verifyPackagedLaunch(applicationInput, evidenceInput) {
       logs: app.getPath('logs'),
       electronVersion: process.versions.electron,
     })))
-    if (!identity.packaged || identity.appPath !== join(bundle, 'Contents/Resources/app.asar')) {
+    report = { bundle, ...identity }
+    if (!identity.packaged || await realpath(identity.appPath) !== join(bundle, 'Contents/Resources/app.asar')) {
       throw new Error('Electron did not load the supplied packaged ASAR entry')
     }
     for (const path of [identity.home, identity.userData, identity.sessionData, identity.logs]) {
-      if (!inside(root, path)) throw new Error('Electron did not use isolated application paths: ' + path)
+      if (!await containsRealPath(root, path)) throw new Error('Electron did not use isolated application paths: ' + path)
     }
+    backendLogPath = join(identity.logs, 'desktop-backend.log')
     page = await observe(application.firstWindow({ timeout: startupTimeout }))
     page.on('pageerror', fail)
     page.on('crash', () => { fail(new Error('DSH renderer crashed')) })
@@ -262,9 +272,24 @@ export async function verifyPackagedLaunch(applicationInput, evidenceInput) {
       try {
         const evidence = resolve(evidenceInput)
         await mkdir(evidence, { recursive: true, mode: 0o700 })
+        if (backendLogPath) {
+          let backendLog
+          try {
+            if (!await containsRealPath(root, backendLogPath)) throw new Error('Backend log escaped the isolated home')
+            backendLog = await readFile(backendLogPath, 'utf8')
+          } catch (error) {
+            // A failure before Host startup may leave no backend log in the verified temporary home.
+            if (error.code !== 'ENOENT') throw error
+          }
+          if (backendLog !== undefined) {
+            await writeFile(join(evidence, 'backend.log'), backendLog.slice(-24_000), { flag: 'wx', mode: 0o600 })
+          }
+        }
         await writeFile(join(evidence, 'launch.log'), log + '\n', { flag: 'wx', mode: 0o600 })
         await writeFile(join(evidence, 'launch.json'), JSON.stringify({
-          ...report, passed: failures.length === 0, portReleased, groupReleased, errors: failures.map(message),
+          ...report, passed: failures.length === 0, portReleased, groupReleased,
+          exit: child ? { code: child.exitCode, signal: child.signalCode } : null,
+          errors: failures.map(message),
         }, null, 2) + '\n', { flag: 'wx', mode: 0o600 })
       } catch (error) { failures.push(error) }
     }
